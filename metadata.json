@@ -1,0 +1,9 @@
+{
+  "name": "Sistema de Atendimento e Prestação de Serviço",
+  "description": "Plataforma inteligente de atendimento e prestação de serviços",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera",
+    "microphone"
+  ]
+}
