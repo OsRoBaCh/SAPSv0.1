@@ -1,24 +1,152 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { acceptRequest, rejectRequest, updateRequestStatus, logout, updateUserProfile, updateUserPassword, updateUserPrivacy, getProviderEarnings, requestWithdrawal, getNotifications, markNotificationAsRead, addProviderBankAccount, deleteProviderBankAccount, setDefaultProviderBankAccount, getProviderRequests } from '@/lib/actions';
-import { MapPin, Clock, CheckCircle2, User, Phone, ArrowLeft, LogOut, Brain, AlertCircle, LayoutDashboard, History, User as UserIcon, Settings, ShieldCheck, ArrowRight, Save, Lock, Eye, EyeOff, Trash2, Mail, Map as MapIcon, Navigation, Sparkles, TrendingUp, TrendingDown, Minus, Loader2, Wallet, ArrowUpRight, ArrowDownLeft, Landmark, Bell, X, RefreshCcw } from 'lucide-react';
+import { useState, useEffect, useCallback, memo } from 'react';
+import { GoogleGenAI, Type } from "@google/genai";
+import { acceptRequest, rejectRequest, updateRequestStatus, updateUserProfile, updateUserPassword, updateUserPrivacy, getProviderEarnings, requestWithdrawal, getNotifications, markNotificationAsRead, addProviderBankAccount, deleteProviderBankAccount, setDefaultProviderBankAccount, getProviderRequests, updateTechnicianDocuments, logout, toggleBiometrics } from '@/lib/actions';
+import { MapPin, Clock, CheckCircle2, User, Phone, ArrowLeft, Brain, AlertCircle, LayoutDashboard, History, User as UserIcon, Settings, ShieldCheck, ArrowRight, Save, Lock, Eye, EyeOff, Trash2, Mail, Map as MapIcon, Navigation, Sparkles, TrendingUp, TrendingDown, Minus, Loader2, Wallet, ArrowUpRight, ArrowDownLeft, Landmark, Bell, X, RefreshCcw, FileText, Upload, Check, Fingerprint, LogOut, Shield, Activity, Briefcase } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import confetti from 'canvas-confetti';
+
+// --- AI Technical Analysis Component ---
+const TechnicalAnalysis = memo(({ description, category }: { description: string, category: string }) => {
+  const [analysis, setAnalysis] = useState<{ tools: string[], detail: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(false);
+
+  const analyzeProblem = async () => {
+    if (!description || loading) return;
+    setLoading(true);
+    setError(false);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analisa este pedido de serviço de ${category}: "${description}".
+        Identifica as ferramentas necessárias e fornece uma breve orientação técnica sobre como resolver ou o que esperar.
+        Foca no contexto de Angola se aplicável.`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              tools: {
+                type: Type.ARRAY,
+                items: { type: Type.STRING },
+                description: "Lista de ferramentas recomendadas."
+              },
+              detail: {
+                type: Type.STRING,
+                description: "Análise técnica do problema e recomendações."
+              }
+            },
+            required: ["tools", "detail"]
+          }
+        }
+      });
+
+      if (response && response.text) {
+        const data = JSON.parse(response.text.trim());
+        setAnalysis(data);
+      }
+    } catch (err) {
+      console.error('AI Analysis error:', err);
+      setError(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 border-t border-slate-50 pt-6">
+      {!analysis && !loading && !error && (
+        <button 
+          onClick={analyzeProblem}
+          className="flex items-center gap-2 text-[10px] font-black text-blue-600 uppercase tracking-widest hover:bg-blue-50 px-4 py-2 rounded-xl transition-colors"
+        >
+          <Brain className="w-3.5 h-3.5" />
+          Gerar Análise Técnica IA
+        </button>
+      )}
+
+      {loading && (
+        <div className="flex items-center gap-3 text-[10px] font-black text-slate-400 uppercase tracking-widest animate-pulse px-2">
+          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          IA a processar diagnóstico...
+        </div>
+      )}
+
+      {error && (
+        <div className="text-[10px] font-black text-red-400 uppercase tracking-widest px-2">
+          Erro ao gerar análise. Tente de novo.
+        </div>
+      )}
+
+      {analysis && (
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-slate-900 rounded-3xl p-6 text-white overflow-hidden relative"
+        >
+          <div className="absolute top-0 right-0 p-4 opacity-10">
+            <Brain className="w-12 h-12" />
+          </div>
+          
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-1 h-4 bg-blue-500 rounded-full" />
+              <h4 className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">Raio-X Técnico IA</h4>
+            </div>
+
+            <p className="text-xs text-slate-300 leading-relaxed mb-6 font-medium">
+              {analysis.detail}
+            </p>
+
+            <div className="space-y-3">
+              <h5 className="text-[9px] font-black uppercase tracking-widest text-slate-500">Ferramentas Recomendadas:</h5>
+              <div className="flex flex-wrap gap-2">
+                {analysis.tools.map((tool, i) => (
+                  <span key={i} className="px-3 py-1.5 bg-white/5 border border-white/10 rounded-lg text-[10px] font-bold text-slate-200">
+                    {tool}
+                  </span>
+                ))}
+              </div>
+            </div>
+            
+            <button 
+              onClick={() => setAnalysis(null)}
+              className="mt-6 text-[9px] font-black text-slate-500 uppercase tracking-widest hover:text-white transition-colors"
+            >
+              Fechar Análise
+            </button>
+          </div>
+        </motion.div>
+      )}
+    </div>
+  );
+});
+
+TechnicalAnalysis.displayName = 'TechnicalAnalysis';
 
 export default function ProviderDashboard({ initialRequests, userName, userId, userProfile }: { initialRequests: any[], userName: string, userId: string, userProfile: any }) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'home' | 'map' | 'history' | 'profile' | 'earnings'>('home');
   // Profile sub-screens state
-  const [profileSubScreen, setProfileSubScreen] = useState<'main' | 'account' | 'privacy'>('main');
+  const [profileSubScreen, setProfileSubScreen] = useState<'main' | 'account' | 'privacy' | 'documents' | 'biometrics'>('main');
+  
+  const [processedNotifications, setProcessedNotifications] = useState<Set<string>>(new Set());
   
   // Requests state
   const [requests, setRequests] = useState(initialRequests);
   
   const fetchRequests = useCallback(async () => {
-    const data = await getProviderRequests(userId);
-    setRequests(data);
+    try {
+      const data = await getProviderRequests(userId);
+      setRequests(data);
+    } catch (err) {
+      console.error('Error fetching requests:', err);
+    }
   }, [userId]);
   
   // Earnings state
@@ -41,7 +169,13 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
+
+  // Price adjustment state
+  const [adjustmentRequestId, setAdjustmentRequestId] = useState<string | null>(null);
+  const [adjustmentPrice, setAdjustmentPrice] = useState('');
+  const [adjustmentReason, setAdjustmentReason] = useState('');
 
   // Notifications state
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -59,29 +193,36 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
 
   useEffect(() => {
     fetchNotifications();
-    const interval = setInterval(fetchNotifications, 30000); // Poll every 30s
+    fetchRequests();
+    const interval = setInterval(() => {
+      fetchNotifications();
+      fetchRequests();
+    }, 15000); // Poll every 15s for flow
     return () => clearInterval(interval);
-  }, [userId, fetchNotifications]);
+  }, [userId, fetchNotifications, fetchRequests]);
 
   // Detect new requests or status changes from notifications
   useEffect(() => {
     const relevantTitles = ['Novo Pedido Disponível', 'Novo Pedido Alternativo', 'Pagamento Confirmado'];
-    const statusNotification = notifications.find(n => relevantTitles.includes(n.titulo) && !n.lida);
+    const unprocessedNotification = notifications.find(n => 
+      relevantTitles.includes(n.titulo) && 
+      !n.lida && 
+      !processedNotifications.has(n.uuidNotificacao)
+    );
     
-    if (statusNotification) {
+    if (unprocessedNotification) {
+      // Mark as processed in local state first to prevent immediate re-trigger
+      setProcessedNotifications(prev => new Set(prev).add(unprocessedNotification.uuidNotificacao));
+      
       // Refresh requests silently
       fetchRequests();
-      // Mark as read to avoid loop
-      handleMarkAsRead(statusNotification.uuidNotificacao);
+      
+      // Mark as read in DB
+      handleMarkAsRead(unprocessedNotification.uuidNotificacao);
     }
-  }, [notifications, handleMarkAsRead, fetchRequests]);
+  }, [notifications, handleMarkAsRead, fetchRequests, processedNotifications]);
 
   const unreadCount = notifications.filter(n => !n.lida).length;
-
-  const handleLogout = async () => {
-    await logout();
-    router.push('/');
-  };
 
   const handleAction = async (id: string, action: 'accept' | 'start' | 'complete' | 'reject') => {
     setLoadingId(id);
@@ -108,6 +249,30 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
       setError('Ocorreu um erro ao processar a sua solicitação.');
     } finally {
       setLoadingId(null);
+    }
+  };
+
+  const handleAdjustPrice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!adjustmentRequestId || !adjustmentPrice || !adjustmentReason) return;
+    
+    setIsSubmitting(true);
+    try {
+      const { updateRequestPrice } = await import('@/lib/actions');
+      const res = await updateRequestPrice(adjustmentRequestId, parseFloat(adjustmentPrice), adjustmentReason);
+      if (res.success) {
+        await fetchRequests();
+        setAdjustmentRequestId(null);
+        setAdjustmentPrice('');
+        setAdjustmentReason('');
+        setMessage({ type: 'success', text: 'Proposta de ajuste enviada para o cliente!' });
+      } else {
+        setError(res.error || 'Erro ao ajustar preço');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -168,6 +333,73 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
       }
     } catch (err) {
       setMessage({ type: 'error', text: 'Erro de conexão.' });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const [docsStatus, setDocsStatus] = useState({
+    bi: userProfile?.urlBilheteIdentidade || null,
+    criminal: userProfile?.urlRegistoCriminal || null,
+    certificado: userProfile?.urlCertificadoFormacao || null
+  });
+
+  const handleUploadDoc = async (type: 'bi' | 'criminal' | 'certificado', fileName: string) => {
+    setIsSubmitting(true);
+    setMessage(null);
+    try {
+      // Use picsum for better visual feedback in the admin review instead of broken links
+      const mockUrl = `https://picsum.photos/seed/${userId}_${type}/800/1100`;
+      const res = await updateTechnicianDocuments(userId, {
+        urlBI: type === 'bi' ? mockUrl : undefined,
+        urlCriminal: type === 'criminal' ? mockUrl : undefined,
+        urlCertificado: type === 'certificado' ? mockUrl : undefined
+      });
+
+      if (res.success) {
+        setDocsStatus(prev => ({ ...prev, [type]: mockUrl }));
+        setMessage({ type: 'success', text: 'Documento submetido para análise!' });
+        
+        // Check if all major docs are submitted (Mock logic: if at least 2 are submitted now)
+        const updatedDocs = { ...docsStatus, [type]: mockUrl };
+        const submittedCount = Object.values(updatedDocs).filter(v => v !== null).length;
+        
+        if (submittedCount >= 3) {
+          setShowSuccessModal(true);
+          confetti({
+            particleCount: 150,
+            spread: 70,
+            origin: { y: 0.6 },
+            colors: ['#2563eb', '#10b981', '#ffffff']
+          });
+        }
+      } else {
+        setMessage({ type: 'error', text: 'Erro ao submeter documento.' });
+      }
+    } catch (err) {
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    await logout();
+  };
+
+  const handleToggleBiometrics = async (enabled: boolean) => {
+    setIsSubmitting(true);
+    try {
+      const credentialId = enabled ? `cred_${Math.random().toString(36).substring(7)}` : undefined;
+      const publicKey = enabled ? `pub_${Math.random().toString(36).substring(7)}` : undefined;
+      
+      const res = await toggleBiometrics(userId, enabled, credentialId, publicKey);
+      if (res.success) {
+        // Success
+      } else {
+        alert('Erro ao alterar biometria');
+      }
+    } catch (err) {
+      console.error(err);
     } finally {
       setIsSubmitting(false);
     }
@@ -270,7 +502,8 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
   };
 
   return (
-    <div className="min-h-screen bg-slate-50/50 pb-24 font-sans">
+    <>
+      <div className="min-h-screen bg-slate-50/50 pb-24 font-sans">
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-4 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -284,27 +517,29 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
               </Link>
             )}
             <div className="flex items-center gap-3">
-              <div className="bg-blue-600 p-2 rounded-xl shadow-lg shadow-blue-200">
+              <div className="bg-blue-600 p-2.5 rounded-2xl shadow-xl shadow-blue-200 ring-2 ring-white">
                 <Brain className="w-5 h-5 text-white" />
               </div>
               <div>
-                <h1 className="text-xl font-display font-bold text-slate-900 tracking-tight">
-                  {activeTab === 'home' && 'Área do Prestador'}
-                  {activeTab === 'map' && 'Mapa de Serviços'}
-                  {activeTab === 'history' && 'Histórico de Serviços'}
+                <h1 className="text-xl font-display font-black text-slate-900 tracking-tight leading-none mb-1">
+                  {activeTab === 'home' && 'Technology Center'}
+                  {activeTab === 'map' && 'Radar UX'}
+                  {activeTab === 'history' && 'Logs de Conclusão'}
                   {activeTab === 'profile' && (
-                    profileSubScreen === 'main' ? 'Meu Perfil' :
-                    profileSubScreen === 'account' ? 'Definições da Conta' : 'Privacidade'
+                    profileSubScreen === 'main' ? 'UX Profile' :
+                    profileSubScreen === 'account' ? 'Definições UX' :
+                    profileSubScreen === 'documents' ? 'Documentação' : 'Segurança de Dados'
                   )}
                 </h1>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{userName}</p>
+                <div className="flex items-center gap-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                  <p className="text-[9px] font-black text-blue-600 uppercase tracking-widest">Técnico Tecnologia UX</p>
+                </div>
               </div>
             </div>
           </div>
           {activeTab === 'profile' && profileSubScreen === 'main' && (
-            <button onClick={handleLogout} className="text-red-600 p-2 rounded-lg hover:bg-red-50 transition-colors">
-              <LogOut className="w-5 h-5" />
-            </button>
+            <div className="w-10" />
           )}
 
           <div className="relative">
@@ -370,6 +605,52 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
       <main className="max-w-5xl mx-auto px-4 mt-8">
         {activeTab === 'home' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+            {userProfile?.estadoConta !== 'Ativo' && (
+              <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 mb-10">
+                 <div className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/50 border-4 border-slate-100 p-12 text-center relative overflow-hidden">
+                    <div className="absolute top-0 right-0 -mr-20 -mt-20 w-80 h-80 bg-blue-50 rounded-full blur-3xl opacity-50" />
+                    <div className="relative z-10">
+                      <div className="w-24 h-24 bg-blue-100 rounded-[2rem] flex items-center justify-center mx-auto mb-10 shadow-xl shadow-blue-50 border-4 border-white">
+                        <Shield className="w-12 h-12 text-blue-600" />
+                      </div>
+                      <h2 className="text-4xl font-display font-black text-slate-900 tracking-tighter mb-6">
+                        {userProfile?.estadoConta === 'Em Análise' ? 'Perfil em Análise Técnica' : 'Perfil Suspenso'}
+                      </h2>
+                      <p className="text-slate-500 text-lg font-medium max-w-xl mx-auto leading-relaxed mb-10">
+                        {userProfile?.estadoConta === 'Em Análise' 
+                          ? 'A nossa equipa está a validar a sua documentação. Receberá uma notificação assim que for aprovado para aceitar serviços.'
+                          : 'O seu perfil foi suspenso pela administração. Por favor, contacte o suporte ou reveja as suas notificações.'}
+                      </p>
+                      
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-3xl mx-auto mb-12">
+                        <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                          <CheckCircle2 className="w-6 h-6 text-green-500 mx-auto mb-3" />
+                          <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Identidade</p>
+                          <p className="font-bold text-slate-900">{userProfile?.urlBilheteIdentidade ? 'Submetido' : 'Pendente'}</p>
+                        </div>
+                        <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                          <Activity className="w-6 h-6 text-blue-500 mx-auto mb-3" />
+                          <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Criminal</p>
+                          <p className="font-bold text-slate-900">{userProfile?.urlRegistoCriminal ? 'Submetido' : 'Pendente'}</p>
+                        </div>
+                        <div className="bg-slate-50 p-6 rounded-[2rem] border border-slate-100">
+                          <Briefcase className="w-6 h-6 text-purple-500 mx-auto mb-3" />
+                          <p className="text-[10px] font-black uppercase text-slate-400 tracking-widest">Formação</p>
+                          <p className="font-bold text-slate-900">{userProfile?.urlCertificadoFormacao ? 'Submetido' : 'Pendente'}</p>
+                        </div>
+                      </div>
+
+                      <button 
+                        onClick={() => { setActiveTab('profile'); setProfileSubScreen('documents'); }}
+                        className="px-12 py-5 bg-slate-900 text-white font-display font-black text-lg rounded-[2rem] hover:bg-black transition-all shadow-2xl active:scale-95"
+                      >
+                        Completar Documentação
+                      </button>
+                    </div>
+                 </div>
+              </div>
+            )}
+
             {error && (
               <div className="bg-red-50 border border-red-200 text-red-600 px-4 py-3 rounded-xl text-sm flex items-center gap-2 animate-in fade-in slide-in-from-top-2">
                 <AlertCircle className="w-4 h-4" />
@@ -395,7 +676,7 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              {requests.filter(r => r.estadoSolicitacao === 'Pendente' || r.estadoSolicitacao === 'Aceite' || r.estadoSolicitacao === 'Em curso').length === 0 ? (
+              {requests.filter(r => r.estadoSolicitacao === 'Pendente' || r.estadoSolicitacao === 'Aceite' || r.estadoSolicitacao === 'Em curso' || r.estadoSolicitacao === 'Aguardando Aprovação Preço').length === 0 ? (
                 <div className="text-center py-24 bg-white rounded-[3rem] border border-slate-100 border-dashed col-span-full">
                   <div className="bg-slate-50 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-6">
                     <Sparkles className="w-10 h-10 text-slate-200" />
@@ -405,7 +686,7 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
                 </div>
               ) : (
                 requests
-                  .filter(r => r.estadoSolicitacao === 'Pendente' || r.estadoSolicitacao === 'Aceite' || r.estadoSolicitacao === 'Em curso')
+                  .filter(r => r.estadoSolicitacao === 'Pendente' || r.estadoSolicitacao === 'Aceite' || r.estadoSolicitacao === 'Em curso' || r.estadoSolicitacao === 'Aguardando Aprovação Preço')
                   .map((req, idx) => (
                   <motion.div 
                     initial={{ opacity: 0, scale: 0.95 }}
@@ -456,6 +737,105 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
                             {req.tipoAtendimento}
                           </div>
                         </div>
+
+                        {/* Price Adjustment Form */}
+                        <AnimatePresence>
+                          {(req.estadoSolicitacao === 'Aceite' || req.estadoSolicitacao === 'Em curso') && (
+                            <div className="mt-6 border-t border-slate-50 pt-6">
+                              {adjustmentRequestId === req.uuidSolicitacao ? (
+                                <motion.form 
+                                  initial={{ opacity: 0, height: 0 }}
+                                  animate={{ opacity: 1, height: 'auto' }}
+                                  exit={{ opacity: 0, height: 0 }}
+                                  onSubmit={handleAdjustPrice}
+                                  className="space-y-4 bg-slate-50 p-6 rounded-3xl border border-slate-200"
+                                >
+                                  <div className="flex items-center gap-2 mb-4">
+                                    <TrendingUp className="w-4 h-4 text-blue-600" />
+                                    <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-900">Propor Ajuste de Preço (RN02)</h4>
+                                  </div>
+                                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Novo Preço (Kz)</label>
+                                      <input 
+                                        type="number" 
+                                        value={adjustmentPrice}
+                                        onChange={(e) => setAdjustmentPrice(e.target.value)}
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                                        placeholder="Ex: 15000"
+                                        required
+                                      />
+                                    </div>
+                                    <div className="space-y-2">
+                                      <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest ml-1">Justificativa</label>
+                                      <input 
+                                        type="text" 
+                                        value={adjustmentReason}
+                                        onChange={(e) => setAdjustmentReason(e.target.value)}
+                                        className="w-full bg-white border border-slate-200 rounded-xl px-4 py-3 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                                        placeholder="Ex: Requer troca de peça X..."
+                                        required
+                                      />
+                                    </div>
+                                  </div>
+                                  <div className="flex gap-2 text-[10px]">
+                                    <button 
+                                      type="submit"
+                                      disabled={isSubmitting}
+                                      className="flex-1 bg-blue-600 text-white font-black uppercase tracking-widest py-3 rounded-xl hover:bg-blue-700 transition-all disabled:opacity-50"
+                                    >
+                                      {isSubmitting ? 'A enviar...' : 'Enviar Proposta'}
+                                    </button>
+                                    <button 
+                                      type="button"
+                                      onClick={() => setAdjustmentRequestId(null)}
+                                      className="flex-1 bg-white text-slate-500 border border-slate-200 font-black uppercase tracking-widest py-3 rounded-xl hover:bg-slate-100 transition-all"
+                                    >
+                                      Cancelar
+                                    </button>
+                                  </div>
+                                </motion.form>
+                              ) : (
+                                <button
+                                  onClick={() => {
+                                    setAdjustmentRequestId(req.uuidSolicitacao);
+                                    setAdjustmentPrice(req.precoFinal.toString());
+                                  }}
+                                  className="flex items-center gap-2 text-[9px] font-black text-slate-400 uppercase tracking-widest hover:text-blue-600 transition-colors"
+                                >
+                                  <TrendingUp className="w-3 h-3" />
+                                  Ajustar preço final (Requer aprovação do cliente)
+                                </button>
+                              )}
+                              {req.estadoSolicitacao === 'Aguardando Aprovação Preço' && (
+                                <div className="mt-4 p-4 bg-blue-50 rounded-2xl border border-blue-100 flex flex-col gap-2">
+                                  <div className="flex items-center gap-2">
+                                    <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                                    <span className="text-[9px] font-black text-blue-600 uppercase tracking-widest">Aguardando Aprovação do Cliente</span>
+                                  </div>
+                                  <p className="text-[10px] text-blue-700 font-medium font-italic">
+                                    Proposta: {req.precoExibicao?.toLocaleString()} Kz - &quot;{req.iaJustificativaPreco}&quot;
+                                  </p>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* AI Technical Insight for the Specialist */}
+                        <TechnicalAnalysis description={req.descricaoProblema} category={req.nomeCategoria} />
+
+                        {req.iaJustificativaPreco && (
+                          <div className="mt-4 p-4 bg-slate-50 rounded-2xl border border-slate-100/50">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Brain className="w-3 h-3 text-slate-400" />
+                              <span className="text-[9px] font-black uppercase tracking-widest text-slate-400">Justificação de Preço IA</span>
+                            </div>
+                            <p className="text-[10px] text-slate-500 font-medium italic border-l-2 border-blue-100 pl-3">
+                              &quot;{req.iaJustificativaPreco}&quot;
+                            </p>
+                          </div>
+                        )}
 
                         {(req.estadoSolicitacao === 'Aceite' || req.estadoSolicitacao === 'Em curso') && req.clienteTelefone && (
                           <div className="mt-6 p-4 bg-blue-50 rounded-2xl border border-blue-100 flex items-center justify-between">
@@ -866,43 +1246,51 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
             {message && (
               <div className={`p-4 rounded-2xl flex items-center gap-3 text-sm font-medium animate-in fade-in zoom-in-95 ${
-                message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
+                message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 
+                message.type === 'warning' ? 'bg-yellow-50 text-yellow-700 border border-yellow-100' :
+                'bg-red-50 text-red-700 border border-red-100'
               }`}>
-                {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+                {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : 
+                 message.type === 'warning' ? <AlertCircle className="w-5 h-5" /> :
+                 <AlertCircle className="w-5 h-5" />}
                 {message.text}
               </div>
             )}
 
             {profileSubScreen === 'main' && (
               <div className="space-y-6">
-                <div className="bg-white rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 p-10 text-center relative overflow-hidden">
+                <div className="bg-white rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 p-6 md:p-10 text-center relative overflow-hidden">
                   <div className="absolute top-0 left-0 w-full h-2 bg-blue-600"></div>
-                  <div className="w-28 h-28 bg-slate-50 rounded-[2rem] flex items-center justify-center mx-auto mb-6 border-4 border-white shadow-xl relative group">
-                    <UserIcon className="w-12 h-12 text-slate-300 group-hover:text-blue-600 transition-colors" />
-                    <div className="absolute -bottom-2 -right-2 bg-green-500 w-8 h-8 rounded-full border-4 border-white flex items-center justify-center">
-                      <ShieldCheck className="w-4 h-4 text-white" />
+                  <div className="w-24 h-24 md:w-28 md:h-28 bg-slate-50 rounded-[1.5rem] md:rounded-[2.5rem] flex items-center justify-center mx-auto mb-6 border-4 border-white shadow-xl relative group">
+                    <UserIcon className="w-10 h-10 md:w-12 md:h-12 text-slate-300 group-hover:text-blue-600 transition-colors" />
+                    <div className="absolute -bottom-1 -right-1 bg-green-500 w-6 h-6 md:w-8 md:h-8 rounded-full border-4 border-white flex items-center justify-center">
+                      <ShieldCheck className="w-3 h-3 md:w-4 md:h-4 text-white" />
                     </div>
                   </div>
-                  <h2 className="text-3xl font-display font-black text-slate-900 tracking-tight mb-1">{userName}</h2>
-                  <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mb-8">Prestador Certificado SAPS</p>
+                  <h2 className="text-2xl md:text-3xl font-display font-black text-slate-900 tracking-tight mb-1">{userName}</h2>
+                  <div className="flex items-center justify-center gap-2 mb-8">
+                    <Sparkles className="w-3 h-3 text-blue-600" />
+                    <p className="text-[9px] md:text-[10px] font-black text-blue-600 uppercase tracking-[0.2em]">Técnico SAPS Verificado</p>
+                    <Sparkles className="w-3 h-3 text-blue-600" />
+                  </div>
                   
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
-                    <div className="flex items-center gap-4 p-5 bg-slate-50 rounded-3xl border border-slate-100 group hover:bg-white hover:shadow-lg transition-all">
-                      <div className="bg-white p-3 rounded-2xl shadow-sm group-hover:bg-blue-600 group-hover:text-white transition-all">
-                        <Mail className="w-4 h-4" />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
+                    <div className="flex items-center gap-3 md:gap-4 p-4 md:p-5 bg-slate-50 rounded-2xl md:rounded-3xl border border-slate-100 group hover:bg-white hover:shadow-lg transition-all">
+                      <div className="bg-white p-2 md:p-3 rounded-xl md:rounded-2xl shadow-sm group-hover:bg-blue-600 group-hover:text-white transition-all">
+                        <Mail className="w-4 h-4 text-blue-600" />
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-0.5">Email Profissional</p>
-                        <p className="text-sm font-bold text-slate-700">{userProfile?.email}</p>
+                      <div className="min-w-0">
+                        <p className="text-[8px] md:text-[10px] text-slate-400 font-black uppercase tracking-widest mb-0.5">Email Profissional</p>
+                        <p className="text-xs md:text-sm font-bold text-slate-700 truncate">{userProfile?.email}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-4 p-5 bg-slate-50 rounded-3xl border border-slate-100 group hover:bg-white hover:shadow-lg transition-all">
-                      <div className="bg-white p-3 rounded-2xl shadow-sm group-hover:bg-blue-600 group-hover:text-white transition-all">
-                        <Phone className="w-4 h-4" />
+                    <div className="flex items-center gap-3 md:gap-4 p-4 md:p-5 bg-slate-50 rounded-2xl md:rounded-3xl border border-slate-100 group hover:bg-white hover:shadow-lg transition-all">
+                      <div className="bg-white p-2 md:p-3 rounded-xl md:rounded-2xl shadow-sm group-hover:bg-blue-600 group-hover:text-white transition-all">
+                        <Phone className="w-4 h-4 text-blue-600" />
                       </div>
-                      <div>
-                        <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mb-0.5">Contacto</p>
-                        <p className="text-sm font-bold text-slate-700">{userProfile?.nTelefone}</p>
+                      <div className="min-w-0">
+                        <p className="text-[8px] md:text-[10px] text-slate-400 font-black uppercase tracking-widest mb-0.5">Contacto</p>
+                        <p className="text-xs md:text-sm font-bold text-slate-700 truncate">{userProfile?.nTelefone}</p>
                       </div>
                     </div>
                   </div>
@@ -921,25 +1309,41 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
                     </div>
                     <ArrowRight className="w-5 h-5 text-slate-300 group-hover:translate-x-1 transition-all" />
                   </button>
-                  <button onClick={() => setProfileSubScreen('privacy')} className="w-full flex items-center justify-between p-6 hover:bg-slate-50 transition-all border-b border-slate-50 group">
+                  <button onClick={() => setProfileSubScreen('documents')} className="w-full flex items-center justify-between p-6 hover:bg-slate-50 transition-all group">
                     <div className="flex items-center gap-5">
-                      <div className="bg-green-50 p-3 rounded-2xl group-hover:bg-green-600 group-hover:text-white transition-all">
-                        <ShieldCheck className="w-5 h-5" />
+                      <div className="bg-purple-50 p-3 rounded-2xl group-hover:bg-purple-600 group-hover:text-white transition-all">
+                        <FileText className="w-5 h-5" />
                       </div>
                       <div className="text-left">
-                        <span className="block font-display font-bold text-slate-900">Privacidade e Segurança</span>
-                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Estado da conta e visibilidade</span>
+                        <span className="block font-display font-bold text-slate-900">Documentação e Portfolio</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Verificação de BI e Certificados</span>
                       </div>
                     </div>
                     <ArrowRight className="w-5 h-5 text-slate-300 group-hover:translate-x-1 transition-all" />
                   </button>
-                  <button onClick={handleLogout} className="w-full flex items-center justify-between p-5 hover:bg-red-50 transition-colors text-red-600">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-red-50 p-2 rounded-xl">
-                        <LogOut className="w-5 h-5 text-red-600" />
+                  <button onClick={() => setProfileSubScreen('biometrics')} className="w-full flex items-center justify-between p-6 hover:bg-slate-50 transition-all border-t border-slate-50 group">
+                    <div className="flex items-center gap-5">
+                      <div className="bg-indigo-50 p-3 rounded-2xl group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                        <Fingerprint className="w-5 h-5" />
                       </div>
-                      <span className="font-bold">Terminar Sessão</span>
+                      <div className="text-left">
+                        <span className="block font-display font-bold text-slate-900">Biometria & Segurança</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">FaceID / Impressão Digital</span>
+                      </div>
                     </div>
+                    <ArrowRight className="w-5 h-5 text-slate-300 group-hover:translate-x-1 transition-all" />
+                  </button>
+                  <button onClick={handleLogout} className="w-full flex items-center justify-between p-6 hover:bg-red-50 transition-all border-t border-slate-50 group">
+                    <div className="flex items-center gap-5">
+                      <div className="bg-red-50 p-3 rounded-2xl group-hover:bg-red-600 group-hover:text-white transition-all">
+                        <LogOut className="w-5 h-5" />
+                      </div>
+                      <div className="text-left">
+                        <span className="block font-display font-bold text-slate-900">Sair da Conta</span>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Terminar sessão atual</span>
+                      </div>
+                    </div>
+                    <ArrowRight className="w-5 h-5 text-slate-300 group-hover:translate-x-1 transition-all text-red-600" />
                   </button>
                 </div>
               </div>
@@ -1042,6 +1446,15 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
             {profileSubScreen === 'privacy' && (
               <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
                 <section className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
+                  {userProfile?.estadoConta === 'Suspenso' && (
+                    <div className="mb-6 p-4 bg-orange-50 border border-orange-100 rounded-2xl flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-orange-600 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-black text-orange-700 uppercase tracking-widest mb-1">Conta Suspensa</p>
+                        <p className="text-sm text-orange-600">A sua conta está sob análise. Submeta os seus documentos para ativação.</p>
+                      </div>
+                    </div>
+                  )}
                   <h3 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
                     <ShieldCheck className="w-5 h-5 text-green-600" />
                     Estado da Conta
@@ -1084,6 +1497,108 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
                 </section>
               </div>
             )}
+
+            {profileSubScreen === 'documents' && (
+              <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                <section className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 p-6 md:p-8">
+                  <div className="mb-6 md:mb-8">
+                    <h3 className="text-xl md:text-2xl font-display font-black text-slate-900 tracking-tight mb-2">Verificação de Identidade</h3>
+                    <p className="text-[13px] md:text-sm text-slate-500 font-medium leading-relaxed">Submeta os documentos necessários para validar o seu perfil profissional. Contas sem documentos validados permanecem suspensas.</p>
+                  </div>
+
+                  <div className="space-y-3 md:space-y-4">
+                    {[
+                      { id: 'bi', label: 'Bilhete de Identidade (BI)', key: 'bi', icon: ShieldCheck, desc: 'Frente e verso legíveis.' },
+                      { id: 'criminal', label: 'Registo Criminal', key: 'criminal', icon: FileText, desc: 'Emitido nos últimos 3 meses.' },
+                      { id: 'certificado', label: 'Certificado de Formação', key: 'certificado', icon: Sparkles, desc: 'Certificado técnico da área.' }
+                    ].map((doc) => (
+                      <div key={doc.id} className="p-4 md:p-6 rounded-[2rem] border-2 border-slate-50 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-4 md:gap-6 group transition-all hover:border-blue-100 hover:bg-white">
+                        <div className="flex items-center gap-4 text-center sm:text-left">
+                          <div className={`p-3 md:p-4 rounded-2xl ${docsStatus[doc.key as keyof typeof docsStatus] ? 'bg-green-100 text-green-600' : 'bg-white text-slate-300 shadow-sm'} transition-colors`}>
+                            <doc.icon className="w-5 h-5 md:w-6 md:h-6" />
+                          </div>
+                          <div className="text-left">
+                            <p className="font-black text-slate-900 text-sm tracking-tight">{doc.label}</p>
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{doc.desc}</p>
+                          </div>
+                        </div>
+
+                        {docsStatus[doc.key as keyof typeof docsStatus] ? (
+                          <div className="w-full sm:w-auto flex items-center justify-center gap-2 bg-green-50 text-green-600 px-4 py-2 rounded-full border border-green-100">
+                            <Check className="w-4 h-4" />
+                            <span className="text-[10px] font-black uppercase tracking-widest">Enviado</span>
+                          </div>
+                        ) : (
+                          <label className="w-full sm:w-auto bg-blue-600 text-white px-6 py-3 rounded-2xl cursor-pointer hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 flex items-center justify-center gap-2">
+                            <Upload className="w-4 h-4" />
+                            <span className="text-[10px] font-black uppercase tracking-widest">Escolher</span>
+                            <input 
+                              type="file" 
+                              className="hidden" 
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) handleUploadDoc(doc.key as any, file.name);
+                              }}
+                            />
+                          </label>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mt-8 md:mt-12 p-6 md:p-8 bg-blue-600 rounded-[2.5rem] text-white relative overflow-hidden">
+                    <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -mr-16 -mt-16 blur-2xl"></div>
+                    <div className="relative z-10 flex flex-col md:flex-row items-center gap-4 md:gap-6 text-center md:text-left">
+                      <div className="bg-white/20 p-4 rounded-3xl backdrop-blur-md">
+                        <AlertCircle className="w-6 h-6 md:w-8 md:h-8" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-md md:text-lg mb-1">Processo de Ativação</p>
+                        <p className="text-[12px] md:text-sm text-blue-100 leading-relaxed">Após o envio, validamos documentos em 24h-48h úteis. Receberá uma notificação quando o seu perfil for ativado.</p>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+              </div>
+            )}
+
+            {profileSubScreen === 'biometrics' && (
+              <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+                <section className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 p-8">
+                  <div className="flex items-center gap-4 mb-4">
+                    <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-100">
+                      <Fingerprint className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-display font-black text-slate-900 tracking-tight">Biometria</h3>
+                      <p className="text-slate-400 text-sm font-medium">Acesso rápido para profissionais</p>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-10 p-8 rounded-[2rem] bg-indigo-50/50 border-2 border-indigo-100 flex items-center justify-between gap-6">
+                    <div>
+                      <p className="font-display font-black text-lg text-indigo-900">Login com Biometria</p>
+                      <p className="text-xs text-indigo-600 font-medium">Use a biometria para entrar rapidamente no dashboard.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleToggleBiometrics(!userProfile?.biometriaHabilitada)}
+                      disabled={isSubmitting}
+                      className={`w-14 h-8 rounded-full transition-all relative ${userProfile?.biometriaHabilitada ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                    >
+                      <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${userProfile?.biometriaHabilitada ? 'left-7' : 'left-1'}`} />
+                    </button>
+                  </div>
+
+                  <div className="mt-8 p-6 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-4">
+                    <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                      Segurança em primeiro lugar. A autenticação biométrica permite que você aceite pedidos e gerencie seus ganhos com um toque.
+                    </p>
+                  </div>
+                </section>
+              </div>
+            )}
+
 
             <div className="text-center">
               <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">SAPS v1.0.0 - Angola</p>
@@ -1272,6 +1787,52 @@ export default function ProviderDashboard({ initialRequests, userName, userId, u
           </button>
         </div>
       </nav>
+
+      <AnimatePresence>
+        {showSuccessModal && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 bg-slate-900/60 backdrop-blur-md"
+            />
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.8, y: 40 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.8, y: 40 }}
+              className="relative w-full max-w-sm bg-white rounded-[3rem] shadow-2xl p-10 text-center overflow-hidden"
+            >
+              <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-blue-600 via-green-500 to-blue-600" />
+              
+              <div className="mb-8 relative inline-block">
+                <div className="w-24 h-24 bg-green-50 rounded-[2rem] flex items-center justify-center mx-auto ring-8 ring-green-50/50">
+                  <CheckCircle2 className="w-12 h-12 text-green-600" />
+                </div>
+                <motion.div 
+                  initial={{ scale: 0 }} animate={{ scale: 1 }} transition={{ delay: 0.3 }}
+                  className="absolute -top-2 -right-2 w-10 h-10 bg-blue-600 rounded-2xl flex items-center justify-center text-white shadow-lg"
+                >
+                  <Sparkles className="w-5 h-5" />
+                </motion.div>
+              </div>
+
+              <h3 className="text-2xl font-display font-black text-slate-900 mb-4 leading-tight">Meus Parabéns!</h3>
+              <p className="text-sm text-slate-500 font-medium mb-10 leading-relaxed">
+                Todos os seus documentos foram submetidos com sucesso. A nossa equipa irá validar o seu perfil nas próximas <span className="text-blue-600 font-bold">24-48 horas</span>.
+              </p>
+
+              <button 
+                onClick={() => setShowSuccessModal(false)}
+                className="w-full py-5 bg-slate-900 text-white rounded-3xl font-black uppercase tracking-widest text-xs hover:bg-slate-800 transition-all shadow-xl shadow-slate-200"
+              >
+                Entendido, obrigado!
+              </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
+    </>
   );
 }

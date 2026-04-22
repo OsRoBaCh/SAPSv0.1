@@ -1,108 +1,185 @@
 'use server';
 
 import db from './db';
+import crypto from 'crypto';
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { createClient } from './supabase/server';
 
-export async function registerUser(data: { nomeCompleto: string; email: string; nTelefone: string; senhaHash: string; tipoUtilizador: 'Cliente' | 'Prestador' }) {
+import bcrypt from 'bcryptjs';
+
+export async function syncUserWithLocalDB(userId: string, email: string, name: string, type: string, phone: string) {
   try {
-    const email = data.email.trim().toLowerCase();
-    const senha = data.senhaHash.trim();
-    const uuidUtilizador = crypto.randomUUID();
-    const dataCadastro = new Date().toISOString();
-
-    const stmtUtilizador = db.prepare(`
-      INSERT INTO utilizador (uuidUtilizador, email, senhaHash, nomeCompleto, nTelefone, tipoUtilizador, dataCadastro)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    db.transaction(() => {
-      stmtUtilizador.run(uuidUtilizador, email, senha, data.nomeCompleto, data.nTelefone, data.tipoUtilizador, dataCadastro);
-      
-      if (data.tipoUtilizador === 'Cliente') {
-        const stmtCliente = db.prepare(`INSERT INTO cliente (uuidUtilizador) VALUES (?)`);
-        stmtCliente.run(uuidUtilizador);
-      } else if (data.tipoUtilizador === 'Prestador') {
-        const stmtPrestador = db.prepare(`INSERT INTO prestador (uuidUtilizador, lat, lon, raioCobertura, estado, classificacao) VALUES (?, ?, ?, ?, ?, ?)`);
-        stmtPrestador.run(uuidUtilizador, 38.7223, -9.1393, 20, 'Fora de Serviço', 0);
+    const existing = db.prepare('SELECT uuidUtilizador, tipoUtilizador FROM utilizador WHERE uuidUtilizador = ? OR email = ?').get(userId, email) as any;
+    
+    if (!existing) {
+      let finalType = type;
+      if (email === 'orchicomo@gmail.com') {
+        finalType = 'Admin';
       }
-    })();
 
-    const cookieStore = await cookies();
-    const cookieOptions = { maxAge: 60 * 60 * 24 * 365 * 10, path: '/' }; // 10 years
-    cookieStore.set('userId', uuidUtilizador, cookieOptions);
-    cookieStore.set('userType', data.tipoUtilizador, cookieOptions);
-    cookieStore.set('userName', data.nomeCompleto, cookieOptions);
+      const estadoInicial = finalType === 'Prestador' ? 'Em Análise' : 'Ativo';
 
-    return { success: true, type: data.tipoUtilizador };
-  } catch (error: any) {
-    console.error('Registration error:', error);
-    if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-      return { success: false, error: 'Email já registado' };
+      db.prepare(`
+        INSERT INTO utilizador (uuidUtilizador, email, senhaHash, nomeCompleto, nTelefone, tipoUtilizador, dataCadastro, estadoConta)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(userId, email, 'supabase_auth', name, phone, finalType, new Date().toISOString(), estadoInicial);
+      
+      if (finalType === 'Cliente') {
+        db.prepare('INSERT OR IGNORE INTO cliente (uuidUtilizador) VALUES (?)').run(userId);
+      } else if (finalType === 'Prestador') {
+        db.prepare('INSERT OR IGNORE INTO prestador (uuidUtilizador, estado, classificacao, saldo) VALUES (?, ?, ?, ?)')
+          .run(userId, 'Inativo', 5.0, 0);
+      }
+      return finalType;
+    } else if (email === 'orchicomo@gmail.com') {
+      // Force update to Admin for this specific user if already exists
+      db.prepare("UPDATE utilizador SET tipoUtilizador = 'Admin' WHERE email = ?").run(email);
+      return 'Admin';
     }
-    return { success: false, error: 'Erro ao criar conta: ' + error.message };
+    return existing.tipoUtilizador;
+  } catch (error) {
+    console.error('Local sync error:', error);
+    return type;
   }
 }
 
-export async function login(email: string, senhaHash: string) {
-  let user;
-  try {
-    const trimmedEmail = email.trim().toLowerCase();
-    const trimmedSenha = senhaHash.trim();
-    const stmt = db.prepare('SELECT uuidUtilizador, tipoUtilizador, nomeCompleto FROM utilizador WHERE email = ? AND senhaHash = ?');
-    user = stmt.get(trimmedEmail, trimmedSenha) as any;
+export async function getSession() {
+  // Authentication bypass: Return session based on cookie or default to Admin
+  const cookieStore = await cookies();
+  const roleOverride = cookieStore.get('saps_role_override')?.value;
 
-    if (!user) {
-      return { success: false, error: 'Credenciais inválidas' };
-    }
-
-    const cookieStore = await cookies();
-    const cookieOptions = { 
-      maxAge: 60 * 60 * 24 * 365 * 10, // 10 years (effectively permanent)
-      path: '/',
-      httpOnly: true,
-      secure: true,
-      sameSite: 'none' as const
+  if (roleOverride === 'Prestador') {
+    return {
+      userId: 'provider-1',
+      userType: 'Prestador',
+      userName: 'Maria Prestadora (Acesso Aberto)'
     };
-    cookieStore.set('userId', user.uuidUtilizador, cookieOptions);
-    cookieStore.set('userType', user.tipoUtilizador, cookieOptions);
-    cookieStore.set('userName', user.nomeCompleto, cookieOptions);
-  } catch (error: any) {
-    if (error.digest?.startsWith('NEXT_REDIRECT')) throw error;
-    console.error('Login error:', error);
-    return { success: false, error: 'Erro ao fazer login: ' + error.message };
   }
 
-  if (user) {
-    if (user.tipoUtilizador === 'Admin') {
-      redirect('/admin');
-    }
-    redirect(user.tipoUtilizador === 'Cliente' ? '/client' : '/provider');
+  if (roleOverride === 'Cliente') {
+    return {
+      userId: 'client-1',
+      userType: 'Cliente',
+      userName: 'João Cliente (Acesso Aberto)'
+    };
   }
+
+  // Default to Guest if no override
+  return {
+    userId: 'guest-id',
+    userType: 'Guest',
+    userName: 'Visitante',
+    isGuest: true
+  };
+}
+
+export async function setRoleOverride(role: 'Admin' | 'Prestador' | 'Cliente') {
+  const cookieStore = await cookies();
+  cookieStore.set('saps_role_override', role, { maxAge: 60 * 60 * 24 * 7 });
+  revalidatePath('/');
 }
 
 export async function logout() {
   const cookieStore = await cookies();
-  cookieStore.delete('userId');
-  cookieStore.delete('userType');
-  cookieStore.delete('userName');
+  cookieStore.delete('saps_role_override');
+  redirect('/');
 }
 
-export async function getSession() {
-  const cookieStore = await cookies();
-  const userId = cookieStore.get('userId')?.value;
-  const userType = cookieStore.get('userType')?.value;
-  const userName = cookieStore.get('userName')?.value;
-
-  if (!userId) return null;
-
-  return { userId, userType, userName };
+export async function toggleBiometrics(userId: string, enabled: boolean, credentialId?: string, publicKey?: string) {
+  try {
+    const stmt = db.prepare('UPDATE utilizador SET biometriaHabilitada = ?, biometriaCredentialId = ?, biometriaPublicKey = ? WHERE uuidUtilizador = ?');
+    stmt.run(enabled ? 1 : 0, credentialId || null, publicKey || null, userId);
+    revalidatePath('/client');
+    revalidatePath('/provider');
+    return { success: true };
+  } catch (error: any) {
+    console.error('Toggle biometrics error:', error);
+    return { success: false, error: error.message };
+  }
 }
 
 export async function getCategories() {
   const stmt = db.prepare('SELECT uuidCategoria, nomeCategoria, descricao, precoBase FROM categoria WHERE ativo = 1');
   return stmt.all() as any[];
+}
+
+export async function getProvidersByCategory(categoryId: string) {
+  try {
+    const stmt = db.prepare(`
+      SELECT 
+        u.uuidUtilizador, 
+        u.nomeCompleto, 
+        u.nTelefone,
+        p.portfolio,
+        p.bio,
+        p.classificacao,
+        tp.precoBase as precoSugerido
+      FROM utilizador u
+      JOIN prestador p ON u.uuidUtilizador = p.uuidUtilizador
+      JOIN tarifa_prestador tp ON p.uuidUtilizador = tp.uuidUtilizador
+      WHERE tp.uuidCategoria = ? AND tp.ativo = 1 AND p.estado = 'Em Serviço'
+    `);
+    
+    return stmt.all(categoryId) as any[];
+  } catch (error) {
+    console.error('Error fetching providers by category:', error);
+    return [];
+  }
+}
+
+// --- HELPER FUNCTIONS ---
+
+function applyDynamicPricing(request: any) {
+  if (request.estadoSolicitacao !== 'Pendente') {
+    return { ...request, precoExibicao: request.precoFinal };
+  }
+
+  const now = new Date();
+  const created = new Date(request.dataCriacao);
+  const diffMinutes = (now.getTime() - created.getTime()) / (1000 * 60);
+  
+  let dynamicPrice = request.precoFinal;
+  let priceLabel = '';
+  let priceTrend: 'up' | 'down' | 'stable' = 'stable';
+
+  if (request.tipoAtendimento === 'Imediato') {
+    if (diffMinutes >= 3 && diffMinutes < 6) {
+      dynamicPrice = request.precoFinal * 1.15;
+      priceLabel = 'Urgência (+15%)';
+      priceTrend = 'up';
+    } else if (diffMinutes >= 6 && diffMinutes < 10) {
+      dynamicPrice = request.precoFinal * 1.30;
+      priceLabel = 'Crítico (+30%)';
+      priceTrend = 'up';
+    } else if (diffMinutes >= 10) {
+      // Fluctuates to find a taker
+      const fluctuation = 1.30 + (Math.sin(diffMinutes) * 0.05);
+      dynamicPrice = request.precoFinal * fluctuation;
+      priceLabel = 'Ajuste de Mercado';
+      priceTrend = Math.sin(diffMinutes) > 0 ? 'up' : 'down';
+    }
+  } else {
+    // Scheduled services might decrease to attract fill-in work if not taken
+    if (diffMinutes >= 15) {
+      const discount = Math.min(0.20, Math.floor(diffMinutes / 10) * 0.05);
+      if (discount > 0) {
+        dynamicPrice = request.precoFinal * (1 - discount);
+        priceLabel = `Incentivo (-${Math.round(discount * 100)}%)`;
+        priceTrend = 'down';
+      }
+    }
+  }
+
+  return { 
+    ...request, 
+    precoExibicao: dynamicPrice, 
+    priceLabel, 
+    priceTrend,
+    isBoosted: dynamicPrice > request.precoFinal,
+    isDiscounted: dynamicPrice < request.precoFinal
+  };
 }
 
 export async function getClientRequests(clientId: string) {
@@ -116,57 +193,7 @@ export async function getClientRequests(clientId: string) {
     ORDER BY s.dataCriacao DESC
   `);
   const requests = stmt.all(clientId) as any[];
-  
-  // Apply Dynamic Pricing Logic
-  const now = new Date();
-  return requests.map(req => {
-    if (req.estadoSolicitacao === 'Pendente') {
-      const created = new Date(req.dataCriacao);
-      const diffMinutes = (now.getTime() - created.getTime()) / (1000 * 60);
-      
-      let dynamicPrice = req.precoFinal;
-      let priceLabel = '';
-      let priceTrend: 'up' | 'down' | 'stable' = 'stable';
-
-      if (req.tipoAtendimento === 'Imediato') {
-        if (diffMinutes >= 3 && diffMinutes < 6) {
-          dynamicPrice = req.precoFinal * 1.15;
-          priceLabel = 'Urgência (+15%)';
-          priceTrend = 'up';
-        } else if (diffMinutes >= 6 && diffMinutes < 10) {
-          dynamicPrice = req.precoFinal * 1.30;
-          priceLabel = 'Crítico (+30%)';
-          priceTrend = 'up';
-        } else if (diffMinutes >= 10) {
-          // Fluctuates to find a taker
-          const fluctuation = 1.30 + (Math.sin(diffMinutes) * 0.05);
-          dynamicPrice = req.precoFinal * fluctuation;
-          priceLabel = 'Ajuste de Mercado';
-          priceTrend = Math.sin(diffMinutes) > 0 ? 'up' : 'down';
-        }
-      } else {
-        // Scheduled services might decrease to attract fill-in work if not taken
-        if (diffMinutes >= 15) {
-          const discount = Math.min(0.20, Math.floor(diffMinutes / 10) * 0.05);
-          if (discount > 0) {
-            dynamicPrice = req.precoFinal * (1 - discount);
-            priceLabel = `Incentivo (-${Math.round(discount * 100)}%)`;
-            priceTrend = 'down';
-          }
-        }
-      }
-
-      return { 
-        ...req, 
-        precoExibicao: dynamicPrice, 
-        priceLabel, 
-        priceTrend,
-        isBoosted: dynamicPrice > req.precoFinal,
-        isDiscounted: dynamicPrice < req.precoFinal
-      };
-    }
-    return { ...req, precoExibicao: req.precoFinal };
-  });
+  return requests.map(applyDynamicPricing);
 }
 
 export async function getProviderRequests(providerId: string) {
@@ -180,64 +207,41 @@ export async function getProviderRequests(providerId: string) {
     ORDER BY s.dataCriacao DESC
   `);
   const requests = stmt.all(providerId, providerId) as any[];
-
-  // Apply Dynamic Pricing Logic (Same as above)
-  const now = new Date();
-  return requests.map(req => {
-    if (req.estadoSolicitacao === 'Pendente') {
-      const created = new Date(req.dataCriacao);
-      const diffMinutes = (now.getTime() - created.getTime()) / (1000 * 60);
-      
-      let dynamicPrice = req.precoFinal;
-      let priceLabel = '';
-      let priceTrend: 'up' | 'down' | 'stable' = 'stable';
-
-      if (req.tipoAtendimento === 'Imediato') {
-        if (diffMinutes >= 3 && diffMinutes < 6) {
-          dynamicPrice = req.precoFinal * 1.15;
-          priceLabel = 'Urgência (+15%)';
-          priceTrend = 'up';
-        } else if (diffMinutes >= 6 && diffMinutes < 10) {
-          dynamicPrice = req.precoFinal * 1.30;
-          priceLabel = 'Crítico (+30%)';
-          priceTrend = 'up';
-        } else if (diffMinutes >= 10) {
-          const fluctuation = 1.30 + (Math.sin(diffMinutes) * 0.05);
-          dynamicPrice = req.precoFinal * fluctuation;
-          priceLabel = 'Ajuste de Mercado';
-          priceTrend = Math.sin(diffMinutes) > 0 ? 'up' : 'down';
-        }
-      } else {
-        if (diffMinutes >= 15) {
-          const discount = Math.min(0.20, Math.floor(diffMinutes / 10) * 0.05);
-          if (discount > 0) {
-            dynamicPrice = req.precoFinal * (1 - discount);
-            priceLabel = `Incentivo (-${Math.round(discount * 100)}%)`;
-            priceTrend = 'down';
-          }
-        }
-      }
-
-      return { 
-        ...req, 
-        precoExibicao: dynamicPrice, 
-        priceLabel, 
-        priceTrend,
-        isBoosted: dynamicPrice > req.precoFinal,
-        isDiscounted: dynamicPrice < req.precoFinal
-      };
-    }
-    return { ...req, precoExibicao: req.precoFinal };
-  });
+  return requests.map(applyDynamicPricing);
 }
 
 export async function getUserProfile(userId: string) {
   try {
-    const stmt = db.prepare('SELECT uuidUtilizador, email, nomeCompleto, nTelefone, tipoUtilizador, estadoConta, dataCadastro FROM utilizador WHERE uuidUtilizador = ?');
-    return stmt.get(userId) as any;
+    const user = db.prepare('SELECT uuidUtilizador, email, nomeCompleto, nTelefone, tipoUtilizador, estadoConta, dataCadastro FROM utilizador WHERE uuidUtilizador = ?').get(userId) as any;
+    
+    if (user && user.tipoUtilizador === 'Prestador') {
+      const pData = db.prepare('SELECT urlBilheteIdentidade, urlRegistoCriminal, urlCertificadoFormacao, bio, portfolio FROM prestador WHERE uuidUtilizador = ?').get(userId) as any;
+      return { ...user, ...pData };
+    }
+    return user;
   } catch (error) {
     console.error('Get profile error:', error);
     return null;
+  }
+}
+
+export async function updateTechnicianDocuments(userId: string, paths: { urlBI?: string; urlCriminal?: string; urlCertificado?: string }) {
+  try {
+    const stmt = db.prepare(`
+      UPDATE prestador 
+      SET 
+        urlBilheteIdentidade = COALESCE(?, urlBilheteIdentidade), 
+        urlRegistoCriminal = COALESCE(?, urlRegistoCriminal), 
+        urlCertificadoFormacao = COALESCE(?, urlCertificadoFormacao)
+      WHERE uuidUtilizador = ?
+    `);
+    
+    stmt.run(paths.urlBI || null, paths.urlCriminal || null, paths.urlCertificado || null, userId);
+    revalidatePath('/provider');
+    return { success: true };
+  } catch (error: any) {
+    console.error('Update documents error:', error);
+    return { success: false, error: error.message };
   }
 }
 
@@ -307,17 +311,34 @@ export async function createRequest(data: {
   complexidade: string;
   zonaAtendimento: string;
   precoFinal: number;
+  uuidPrestador?: string;
+  iaJustificativaPreco?: string;
 }) {
   try {
     const uuidSolicitacao = crypto.randomUUID();
     const dataCriacao = new Date().toISOString();
+
+    // Safety Check: Ensure the client exists in the client table (prevent FK error)
+    const clientExists = db.prepare('SELECT 1 FROM cliente WHERE uuidUtilizador = ?').get(data.uuidCliente);
+    if (!clientExists) {
+      const userExists = db.prepare('SELECT 1 FROM utilizador WHERE uuidUtilizador = ?').get(data.uuidCliente);
+      if (userExists) {
+        db.prepare('INSERT OR IGNORE INTO cliente (uuidUtilizador) VALUES (?)').run(data.uuidCliente);
+      } else {
+        db.prepare('INSERT OR IGNORE INTO utilizador (uuidUtilizador, email, nomeCompleto, dataCadastro, tipoUtilizador) VALUES (?, ?, ?, ?, ?)')
+          .run(data.uuidCliente, `tmp_${data.uuidCliente}@saps.com`, 'Utilizador Temporário', new Date().toISOString(), 'Cliente');
+        db.prepare('INSERT OR IGNORE INTO cliente (uuidUtilizador) VALUES (?)').run(data.uuidCliente);
+      }
+    }
     
     const stmt = db.prepare(`
       INSERT INTO solicitacao (
         uuidSolicitacao, uuidCliente, uuidCategoria, lat, lon, 
-        descricaoProblema, tipoAtendimento, dataProgramada, dataCriacao, complexidade, zonaAtendimento, precoFinal
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        descricaoProblema, tipoAtendimento, dataProgramada, dataCriacao, complexidade, zonaAtendimento, precoFinal, uuidPrestador, estadoSolicitacao, iaJustificativaPreco
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    
+    const estadoInicial = data.uuidPrestador ? 'Aceite' : 'Pendente';
     
     stmt.run(
       uuidSolicitacao,
@@ -331,15 +352,126 @@ export async function createRequest(data: {
       dataCriacao,
       data.complexidade,
       data.zonaAtendimento,
-      data.precoFinal
+      data.precoFinal,
+      data.uuidPrestador || null,
+      estadoInicial,
+      data.iaJustificativaPreco || null
     );
+
+    // Se um prestador foi selecionado via matching, notificar o prestador
+    if (data.uuidPrestador) {
+      const clienteInfo = db.prepare('SELECT nomeCompleto FROM utilizador WHERE uuidUtilizador = ?').get(data.uuidCliente) as any;
+      const categoria = db.prepare('SELECT nomeCategoria FROM categoria WHERE uuidCategoria = ?').get(data.uuidCategoria) as any;
+
+      db.prepare(`
+        INSERT INTO notificacao (uuidNotificacao, uuidUtilizador, titulo, mensagem, dataCriacao)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        data.uuidPrestador,
+        'Novo Match Direto',
+        `Foi selecionado(a) por ${clienteInfo.nomeCompleto} para um serviço de ${categoria.nomeCategoria} via Matching de IA.`,
+        dataCriacao
+      );
+    }
     
     revalidatePath('/client');
     revalidatePath('/provider');
+    revalidatePath('/admin');
     return { success: true, uuidSolicitacao };
   } catch (error: any) {
     console.error('Create request error:', error);
     return { success: false, error: 'Erro ao criar solicitação.' };
+  }
+}
+
+export async function getSmartEstimate(categoryId: string, complexidade: string, zona: string) {
+  try {
+    const categoria = db.prepare('SELECT precoBase FROM categoria WHERE uuidCategoria = ?').get(categoryId) as any;
+    if (!categoria) return null;
+
+    // Base price from category
+    let basePrice = categoria.precoBase;
+    
+    // Historical Adjustment (Simplified AI)
+    // Check average price for similar completed requests
+    const historical = db.prepare(`
+      SELECT AVG(precoFinal) as avgPrice, AVG(duracaoEstimadaHoras) as avgDuration
+      FROM solicitacao
+      WHERE uuidCategoria = ? AND estadoSolicitacao = 'Concluido' AND complexidade = ?
+    `).get(categoryId, complexidade) as any;
+
+    if (historical && historical.avgPrice) {
+      // Weight history 40% and base price 60%
+      basePrice = (basePrice * 0.6) + (historical.avgPrice * 0.4);
+    }
+
+    // Complexity multiplier
+    let multiplier = 1;
+    if (complexidade === 'Simples') multiplier = 0.8;
+    if (complexidade === 'Complexo') multiplier = 1.5;
+
+    const estimatedService = basePrice * multiplier;
+    const estimatedTravel = zona === 'Centro' ? 2000 : 3500;
+    
+    // Range calculation
+    const min = (estimatedService + estimatedTravel) * 0.9;
+    const max = (estimatedService + estimatedTravel) * 1.3;
+
+    return {
+      service: estimatedService,
+      travel: estimatedTravel,
+      totalMin: Math.round(min / 100) * 100,
+      totalMax: Math.round(max / 100) * 100,
+      duration: historical?.avgDuration || (complexidade === 'Simples' ? 1 : complexidade === 'Normal' ? 3 : 8)
+    };
+  } catch (error) {
+    console.error('Estimate error:', error);
+    return null;
+  }
+}
+
+export async function updateRequestPrice(requestId: string, providerId: string, newPrice: number, justification: string) {
+  try {
+    const solicitacao = db.prepare('SELECT uuidCliente, precoFinal FROM solicitacao WHERE uuidSolicitacao = ?').get(requestId) as any;
+    
+    // RN04: Registration of changes to avoid fraud
+    db.prepare(`
+      UPDATE solicitacao 
+      SET precoFinal = ?, iaJustificativaPreco = ?, estadoSolicitacao = 'Aguardando Aprovação Preço'
+      WHERE uuidSolicitacao = ? AND uuidPrestador = ?
+    `).run(newPrice, justification, requestId, providerId);
+
+    // Notify Client (RN03)
+    db.prepare(`
+      INSERT INTO notificacao (uuidNotificacao, uuidUtilizador, titulo, mensagem, dataCriacao)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(
+      crypto.randomUUID(),
+      solicitacao.uuidCliente,
+      'Ajuste de Preço',
+      `O técnico propôs um ajuste de preço para ${newPrice.toLocaleString('pt-AO')} Kz. Motivo: ${justification}. Por favor, aprove para continuar.`,
+      new Date().toISOString()
+    );
+
+    revalidatePath('/client');
+    revalidatePath('/provider');
+    revalidatePath('/admin');
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
+  }
+}
+
+export async function approvePriceChange(requestId: string) {
+  try {
+    db.prepare("UPDATE solicitacao SET estadoSolicitacao = 'Aceite' WHERE uuidSolicitacao = ?").run(requestId);
+    revalidatePath('/client');
+    revalidatePath('/provider');
+    revalidatePath('/admin');
+    return { success: true };
+  } catch (error: any) {
+    return { success: false, error: error.message };
   }
 }
 
@@ -357,9 +489,19 @@ export async function acceptRequest(requestId: string, providerId?: string) {
   }
 
   // Verificar se o utilizador é realmente um prestador para evitar erro de chave estrangeira
-  const prestador = db.prepare('SELECT uuidUtilizador FROM prestador WHERE uuidUtilizador = ?').get(userId);
+  const prestador = db.prepare(`
+    SELECT p.uuidUtilizador, u.estadoConta 
+    FROM prestador p 
+    JOIN utilizador u ON p.uuidUtilizador = u.uuidUtilizador 
+    WHERE p.uuidUtilizador = ?
+  `).get(userId) as any;
+  
   if (!prestador) {
     return { success: false, error: 'Apenas prestadores de serviço podem aceitar solicitações.' };
+  }
+
+  if (prestador.estadoConta !== 'Ativo') {
+    return { success: false, error: 'A sua conta está suspensa ou em análise. Por favor, complete a sua documentação para ser ativado.' };
   }
 
   try {
@@ -429,6 +571,7 @@ export async function acceptRequest(requestId: string, providerId?: string) {
 
     revalidatePath('/client');
     revalidatePath('/provider');
+    revalidatePath('/admin');
     return { success: true };
   } catch (error: any) {
     console.error('Accept request error:', error);
@@ -478,19 +621,6 @@ export async function updateRequestStatus(requestId: string, status: string) {
     params.push(requestId);
     
     db.transaction(() => {
-      // If completing, generate payment reference
-      if (status === 'Concluido') {
-        const req = db.prepare('SELECT uuidPrestador, precoFinal FROM solicitacao WHERE uuidSolicitacao = ?').get(requestId) as any;
-        if (req && req.uuidPrestador) {
-          // Format: SAPS-[SHORT_REQ_ID]-[SHORT_TECH_ID]
-          const shortReq = requestId.split('-')[0].toUpperCase();
-          const shortTech = req.uuidPrestador.split('-')[0].toUpperCase();
-          const reference = `SAPS-${shortReq}-${shortTech}`;
-          
-          db.prepare('UPDATE solicitacao SET referenciaPagamento = ? WHERE uuidSolicitacao = ?').run(reference, requestId);
-        }
-      }
-
       const stmt = db.prepare(query);
       const info = stmt.run(...params);
       
@@ -505,7 +635,7 @@ export async function updateRequestStatus(requestId: string, status: string) {
         // Notify client
         const titulo = status === 'Concluido' ? 'Pedido Concluído' : 'Serviço Iniciado';
         const mensagem = status === 'Concluido' 
-          ? `O seu serviço de ${categoria.nomeCategoria} foi concluído com sucesso.`
+          ? `O seu serviço de ${categoria.nomeCategoria} foi concluído com sucesso. Por favor, efetue o pagamento para finalizar.`
           : `O técnico iniciou o serviço de ${categoria.nomeCategoria}.`;
 
         db.prepare(`
@@ -520,7 +650,7 @@ export async function updateRequestStatus(requestId: string, status: string) {
         );
 
         if (status === 'Concluido' && solicitacao && solicitacao.uuidPrestador) {
-          // Format: SAPS-[SHORT_REQ_ID]-[SHORT_TECH_ID]
+          // Generate payment reference if not already there
           const shortReq = requestId.split('-')[0].toUpperCase();
           const shortTech = solicitacao.uuidPrestador.split('-')[0].toUpperCase();
           const reference = `SAPS-${shortReq}-${shortTech}`;
@@ -532,6 +662,7 @@ export async function updateRequestStatus(requestId: string, status: string) {
     
     revalidatePath('/client');
     revalidatePath('/provider');
+    revalidatePath('/admin');
     return { success: true };
   } catch (error: any) {
     console.error('Update status error:', error);
@@ -822,7 +953,22 @@ export async function getAdminStats() {
 
 export async function getAllUsers() {
   try {
-    return db.prepare('SELECT uuidUtilizador, email, nomeCompleto, nTelefone, tipoUtilizador, estadoConta, dataCadastro FROM utilizador ORDER BY dataCadastro DESC').all() as any[];
+    return db.prepare(`
+      SELECT 
+        u.uuidUtilizador, 
+        u.email, 
+        u.nomeCompleto, 
+        u.nTelefone, 
+        u.tipoUtilizador, 
+        u.estadoConta, 
+        u.dataCadastro,
+        p.urlBilheteIdentidade,
+        p.urlRegistoCriminal,
+        p.urlCertificadoFormacao
+      FROM utilizador u
+      LEFT JOIN prestador p ON u.uuidUtilizador = p.uuidUtilizador
+      ORDER BY u.dataCadastro DESC
+    `).all() as any[];
   } catch (error) {
     console.error('Get all users error:', error);
     return [];

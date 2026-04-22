@@ -1,142 +1,162 @@
-'use client';
-
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { Brain, ArrowRight, Loader2, Sparkles, ShieldCheck, Clock } from 'lucide-react';
-import { motion } from 'motion/react';
-import { getSession } from '@/lib/actions';
+import { getSession, setRoleOverride } from '@/lib/actions';
+import { Shield, ArrowRight, CheckCircle, Smartphone, Clock, Award, Briefcase } from 'lucide-react';
+import * as motion from 'motion/react-client';
+import { redirect } from 'next/navigation';
 
-export default function Home() {
-  const router = useRouter();
-  const [isRedirecting, setIsRedirecting] = useState(false);
+export const dynamic = 'force-dynamic';
 
-  useEffect(() => {
-    const checkSession = async () => {
-      const session = await getSession();
-      if (session) {
-        setIsRedirecting(true);
-        let target = '/client';
-        if (session.userType === 'Admin') target = '/admin';
-        else if (session.userType === 'Prestador') target = '/provider';
-        
-        router.push(target);
-      }
-    };
-    checkSession();
-  }, [router]);
+export default async function Home() {
+  const session = await getSession();
 
-  const handleSkip = () => {
-    setIsRedirecting(true);
-    router.push('/login');
-  };
+  // Se já houver uma sessão (role override), redirecionar automaticamente para a dashboard correta
+  if (session && !session.isGuest) {
+    if (session.userType === 'Prestador') redirect('/provider');
+    if (session.userType === 'Admin') redirect('/admin');
+    if (session.userType === 'Cliente') redirect('/client');
+  }
 
-  const letters = ["S", "A", "P", "S"];
+  async function selectRole(formData: FormData) {
+    'use server';
+    const role = formData.get('role') as 'Admin' | 'Prestador' | 'Cliente';
+    await setRoleOverride(role);
+    
+    if (role === 'Prestador') redirect('/provider');
+    if (role === 'Admin') redirect('/admin');
+    redirect('/client');
+  }
 
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      {/* Hero Banner */}
-      <div className="relative bg-white overflow-hidden flex-1 flex flex-col justify-center py-20">
-        <div className="absolute inset-0 bg-[radial-gradient(#e2e8f0_1px,transparent_1px)] [background-size:20px_20px] opacity-30" />
-        
-        <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col items-center text-center">
-          
-          {/* 3D Brain Logo */}
-          <div className="relative mb-12 group">
-            <div className="absolute -inset-8 bg-blue-100 rounded-full blur-3xl opacity-40 group-hover:opacity-60 transition duration-1000"></div>
-            <motion.div 
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.8, type: "spring" }}
-              className="relative bg-white p-8 rounded-[2.5rem] shadow-2xl shadow-blue-100 transform transition-transform hover:scale-105 border border-slate-100"
-            >
-              <Brain className="w-24 h-24 text-blue-600" strokeWidth={1.5} />
-            </motion.div>
-          </div>
+    <div className="min-h-screen bg-slate-50 overflow-x-hidden font-sans">
+      {/* Hero / Banner Section */}
+      <section className="relative min-h-[90vh] flex items-center justify-center pt-20 pb-20 px-4">
+        {/* Background Decorative Elements */}
+        <div className="absolute top-0 left-0 w-full h-full overflow-hidden -z-10 pointer-events-none">
+          <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 rounded-full blur-[120px] animate-pulse" />
+          <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/10 rounded-full blur-[120px]" />
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full opacity-[0.03] bg-[radial-gradient(#0f172a_1px,transparent_1px)] [background-size:32px_32px]" />
+        </div>
 
-          {/* SAPS Animation */}
-          <div className="flex gap-4 mb-8">
-            {letters.map((letter, index) => (
-              <motion.span
-                key={index}
-                initial={{ opacity: 0, scale: 0.5, y: 20 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                transition={{
-                  duration: 0.4,
-                  delay: index * 0.1,
-                  type: "spring",
-                  stiffness: 200
-                }}
-                className="text-7xl sm:text-8xl font-display font-black text-slate-900 tracking-tighter"
-              >
-                {letter}
-              </motion.span>
-            ))}
-          </div>
-          
-          <div className="flex flex-col items-center gap-10">
-            <div className="space-y-4">
-              <h2 className="text-2xl sm:text-4xl font-display font-black text-slate-900 tracking-tight max-w-2xl">
-                {isRedirecting ? 'A preparar o seu espaço...' : 'A plataforma inteligente para serviços profissionais em Angola.'}
-              </h2>
-              <p className="text-slate-500 max-w-lg mx-auto leading-relaxed text-lg">
-                Conectamos técnicos qualificados a clientes que precisam de soluções rápidas, seguras e com preços dinâmicos ajustados à realidade.
-              </p>
-            </div>
+        <div className="max-w-6xl mx-auto text-center">
+          <motion.div 
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6 }}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-100 rounded-full text-blue-600 text-sm font-black mb-8 uppercase tracking-widest"
+          >
+            <Shield className="w-4 h-4" />
+            SAPS - Sistema de Agendamento Profissional
+          </motion.div>
 
-            <div className="flex flex-col items-center gap-6 w-full max-w-md">
+          <motion.h1 
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.8, delay: 0.2 }}
+            className="text-6xl md:text-8xl font-display font-black text-slate-900 leading-[0.95] tracking-tighter mb-8"
+          >
+            Serviços de Qualidade <br />
+            <span className="text-blue-600">À Distância de um Clique.</span>
+          </motion.h1>
+
+          <motion.p 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.8, delay: 0.4 }}
+            className="text-xl md:text-2xl text-slate-500 max-w-3xl mx-auto mb-12 font-medium leading-relaxed"
+          >
+            Conectamos os melhores profissionais a quem precisa de soluções rápidas, seguras e eficientes. 
+            Tudo num único lugar, com transparência total.
+          </motion.p>
+
+          <div className="flex flex-col lg:flex-row items-center justify-center gap-4">
+            <form action={selectRole}>
+              <input type="hidden" name="role" value="Cliente" />
               <button 
-                onClick={handleSkip}
-                disabled={isRedirecting}
-                className="w-full group flex items-center justify-center gap-3 px-8 py-6 bg-blue-600 text-white rounded-[2rem] font-display font-black text-xl shadow-2xl shadow-blue-200 hover:bg-blue-700 transition-all active:scale-[0.98] disabled:opacity-70 disabled:cursor-not-allowed"
+                type="submit"
+                className="group flex items-center justify-center gap-3 px-8 py-5 bg-slate-900 text-white rounded-[2rem] text-lg font-black hover:bg-black transition-all hover:scale-105 active:scale-95 shadow-2xl shadow-slate-900/20 w-64"
               >
-                {isRedirecting ? (
-                  <>
-                    <Loader2 className="w-6 h-6 animate-spin" />
-                    A entrar...
-                  </>
-                ) : (
-                  <>
-                    Entrar no SAPS
-                    <ArrowRight className="w-6 h-6 group-hover:translate-x-1 transition-transform" />
-                  </>
-                )}
+                Pedir um Serviço
+                <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
               </button>
+            </form>
+            
+            <form action={selectRole}>
+              <input type="hidden" name="role" value="Prestador" />
+              <button 
+                type="submit"
+                className="group flex items-center justify-center gap-3 px-8 py-5 bg-blue-600 text-white rounded-[2rem] text-lg font-black hover:bg-blue-700 transition-all hover:scale-105 active:scale-95 shadow-2xl shadow-blue-600/20 w-64"
+              >
+                Área do Técnico
+                <Briefcase className="w-5 h-5" />
+              </button>
+            </form>
 
-              {!isRedirecting && (
-                <Link 
-                  href="/register"
-                  className="w-full flex items-center justify-center gap-3 px-8 py-6 bg-white text-slate-900 border-2 border-slate-100 rounded-[2rem] font-display font-black text-xl hover:bg-slate-50 transition-all active:scale-[0.98]"
-                >
-                  Criar Nova Conta
-                  <Sparkles className="w-6 h-6 text-blue-600" />
-                </Link>
-              )}
-              
-              {!isRedirecting && (
-                <div className="flex items-center gap-6">
-                  <div className="flex items-center gap-2 text-slate-400">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em]">500+ Técnicos Ativos</span>
-                  </div>
-                  <div className="w-px h-4 bg-slate-200"></div>
-                  <div className="flex items-center gap-2 text-slate-400">
-                    <div className="w-2 h-2 bg-blue-600 rounded-full animate-pulse"></div>
-                    <span className="text-[10px] font-black uppercase tracking-[0.2em]">Sistema Seguro</span>
-                  </div>
-                </div>
-              )}
-            </div>
+            <form action={selectRole}>
+              <input type="hidden" name="role" value="Admin" />
+              <button 
+                type="submit"
+                className="flex items-center justify-center gap-3 px-8 py-5 bg-white text-slate-900 border-2 border-slate-200 rounded-[2rem] text-lg font-black hover:bg-slate-50 transition-all hover:scale-105 active:scale-95 w-64"
+              >
+                Área Admin
+                <Shield className="w-5 h-5 text-blue-600" />
+              </button>
+            </form>
           </div>
-        </div>
-      </div>
 
-      {/* Footer info */}
-      <div className="bg-white py-12">
-        <div className="max-w-7xl mx-auto px-4 text-center">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">© 2024 SAPS - Sistema de Atendimento e Prestação de Serviços</p>
+          {/* User Session Badge */}
+          {session && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 1 }}
+              className="mt-12 flex items-center justify-center gap-2 text-sm text-slate-400 font-bold"
+            >
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              Sessão Ativa: {session.userName} ({session.userType})
+            </motion.div>
+          )}
         </div>
-      </div>
+      </section>
+
+      {/* Quick Stats / Info */}
+      <section className="pb-32 px-4">
+        <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-3 gap-8">
+          <FeatureItem 
+            icon={<Clock className="w-8 h-8 text-blue-600" />}
+            title="Rapidez Total"
+            desc="Agendamentos feitos em menos de 2 minutos com confirmação imediata."
+          />
+          <FeatureItem 
+            icon={<Award className="w-8 h-8 text-purple-600" />}
+            title="Técnicos Certificados"
+            desc="Todos os nossos prestadores passam por uma verificação rigorosa de documentos."
+          />
+          <FeatureItem 
+            icon={<Smartphone className="w-8 h-8 text-orange-600" />}
+            title="Controlo na Mão"
+            desc="Acompanhe o estado do seu serviço em tempo real através da nossa plataforma."
+          />
+        </div>
+      </section>
+
+      {/* Footer */}
+      <footer className="border-t border-slate-200 py-12 px-4 text-center">
+        <p className="text-slate-400 font-bold text-sm uppercase tracking-widest">
+          © 2026 SAPS Business Solutions. Todos os direitos reservados.
+        </p>
+      </footer>
     </div>
   );
+}
+
+function FeatureItem({ icon, title, desc }: { icon: React.ReactNode, title: string, desc: string }) {
+  return (
+    <div className="p-8 bg-white rounded-[2.5rem] border border-slate-100 hover:border-blue-200 hover:shadow-xl transition-all group">
+      <div className="bg-slate-50 w-16 h-16 rounded-2xl flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+        {icon}
+      </div>
+      <h3 className="text-xl font-display font-black text-slate-900 mb-3">{title}</h3>
+      <p className="text-slate-500 font-medium leading-relaxed">{desc}</p>
+    </div>
+  )
 }

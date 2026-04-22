@@ -1,16 +1,13 @@
-import { getCategories, getClientRequests, getUserProfile, getSystemSettings, getPlatformAccounts } from '@/lib/actions';
+import { getSession, getCategories, getClientRequests, getUserProfile, getSystemSettings, getPlatformAccounts } from '@/lib/actions';
 import ClientDashboard from './ClientDashboard';
-import { cookies } from 'next/headers';
-import { redirect } from 'next/navigation';
+
+export const dynamic = 'force-dynamic';
 
 export default async function ClientPage() {
-  const cookieStore = await cookies();
-  const userId = cookieStore.get('userId')?.value;
-  const userType = cookieStore.get('userType')?.value;
-
-  if (!userId || userType !== 'Cliente') {
-    redirect('/login');
-  }
+  const session = await getSession();
+  
+  // We'll use the mocked session or a guest session
+  const userId = session?.userId || 'guest-id';
 
   const [categories, requests, userProfile, settings, accounts] = await Promise.all([
     getCategories(),

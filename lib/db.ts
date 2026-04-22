@@ -1,11 +1,24 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-const dbPath = path.join(process.cwd(), 'saps.db');
-const db = new Database(dbPath);
+let _db: any = null;
 
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+function getDb() {
+  if (!_db) {
+    try {
+      const dbPath = path.join(process.cwd(), 'saps.db');
+      _db = new Database(dbPath);
+      _db.pragma('journal_mode = WAL');
+      _db.pragma('foreign_keys = ON');
+    } catch (err) {
+      console.error('Failed to initialize database:', err);
+      throw err;
+    }
+  }
+  return _db;
+}
+
+const db = getDb();
 
 // Initialize schema
 db.exec(`
@@ -25,6 +38,11 @@ db.exec(`
       nTelefone TEXT NOT NULL,
       tipoUtilizador TEXT NOT NULL,
       estadoConta TEXT NOT NULL DEFAULT 'Ativo',
+      biometriaHabilitada INTEGER NOT NULL DEFAULT 0,
+      biometriaCredentialId TEXT,
+      biometriaPublicKey TEXT,
+      resetToken TEXT,
+      resetTokenExpires TEXT,
       dataCadastro TEXT NOT NULL
   );
 
@@ -45,6 +63,9 @@ db.exec(`
       saldo REAL NOT NULL DEFAULT 0,
       portfolio TEXT,
       bio TEXT,
+      urlBilheteIdentidade TEXT,
+      urlRegistoCriminal TEXT,
+      urlCertificadoFormacao TEXT,
       FOREIGN KEY(uuidUtilizador) REFERENCES utilizador(uuidUtilizador) ON DELETE CASCADE
   );
 
@@ -174,6 +195,18 @@ db.exec(`
   INSERT OR IGNORE INTO conta_bancaria_plataforma (uuidConta, banco, iban, titular, ativo) VALUES ('acc-3', 'BIC', 'AO06 0011 0000 5555 4444 3333 2', 'SAPS ANGOLA LDA', 1);
 `);
 
+try {
+  db.exec("ALTER TABLE utilizador ADD COLUMN estadoConta TEXT NOT NULL DEFAULT 'Ativo'");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE utilizador ADD COLUMN biometriaHabilitada INTEGER NOT NULL DEFAULT 0");
+  db.exec("ALTER TABLE utilizador ADD COLUMN biometriaCredentialId TEXT");
+  db.exec("ALTER TABLE utilizador ADD COLUMN biometriaPublicKey TEXT");
+  db.exec("ALTER TABLE utilizador ADD COLUMN resetToken TEXT");
+  db.exec("ALTER TABLE utilizador ADD COLUMN resetTokenExpires TEXT");
+} catch (e) {}
+
 // Simple migrations for existing tables
 try {
   db.exec('ALTER TABLE prestador ADD COLUMN saldo REAL NOT NULL DEFAULT 0');
@@ -209,6 +242,22 @@ try {
   db.exec("ALTER TABLE solicitacao ADD COLUMN zonaAtendimento TEXT NOT NULL DEFAULT 'Centro'");
 } catch (e) {}
 
+try {
+  db.exec("ALTER TABLE solicitacao ADD COLUMN iaJustificativaPreco TEXT");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE prestador ADD COLUMN urlBilheteIdentidade TEXT");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE prestador ADD COLUMN urlRegistoCriminal TEXT");
+} catch (e) {}
+
+try {
+  db.exec("ALTER TABLE prestador ADD COLUMN urlCertificadoFormacao TEXT");
+} catch (e) {}
+
 // Seed data if empty
 const count = db.prepare('SELECT COUNT(*) as count FROM categoria').get() as { count: number };
 if (count.count === 0) {
@@ -220,12 +269,14 @@ if (count.count === 0) {
   insertCategoria.run('cat-5', 'Climatização', 'Instalação e reparação de ar condicionado e sistemas de ventilação.', 12000.00);
 
   const insertUtilizador = db.prepare('INSERT INTO utilizador (uuidUtilizador, email, senhaHash, nomeCompleto, nTelefone, tipoUtilizador, dataCadastro) VALUES (?, ?, ?, ?, ?, ?, ?)');
-  insertUtilizador.run('client-1', 'cliente@saps.com', 'hash', 'João Cliente', '912345678', 'Cliente', new Date().toISOString());
-  insertUtilizador.run('provider-1', 'prestador@saps.com', 'hash', 'Maria Prestadora', '987654321', 'Prestador', new Date().toISOString());
-  insertUtilizador.run('admin-1', 'admin@saps.com', 'admin123', 'Administrador SAPS', '900000000', 'Admin', new Date().toISOString());
+  insertUtilizador.run('client-1', 'cliente@saps.com', 'clienthash', 'João Cliente', '912345678', 'Cliente', new Date().toISOString());
+  insertUtilizador.run('provider-1', 'prestador@saps.com', 'providerhash', 'Maria Prestadora', '987654321', 'Prestador', new Date().toISOString());
+  insertUtilizador.run('admin-1', 'admin@saps.com', 'adminhash', 'Administrador SAPS', '900000000', 'Admin', new Date().toISOString());
+  insertUtilizador.run('guest-id', 'visitante@saps.com', 'guesthash', 'Visitante', '000000000', 'Cliente', new Date().toISOString());
 
   const insertCliente = db.prepare('INSERT INTO cliente (uuidUtilizador, preferencia) VALUES (?, ?)');
   insertCliente.run('client-1', 'Nenhuma');
+  insertCliente.run('guest-id', 'Nenhuma');
 
   const insertPrestador = db.prepare('INSERT INTO prestador (uuidUtilizador, lat, lon, raioCobertura, estado, classificacao, bio) VALUES (?, ?, ?, ?, ?, ?, ?)');
   insertPrestador.run('provider-1', 38.7223, -9.1393, 20, 'Em Serviço', 4.8, 'Especialista em canalização e eletricidade.');
@@ -235,18 +286,21 @@ if (count.count === 0) {
   insertTarifa.run('tarifa-2', 'provider-1', 'cat-2', 40, 'Hora');
 } else {
   // Update existing prices to be lower
-  db.prepare("UPDATE categoria SET precoBase = 8000.00 WHERE uuidCategoria = 'cat-1'").run();
-  db.prepare("UPDATE categoria SET precoBase = 10000.00 WHERE uuidCategoria = 'cat-2'").run();
+  db.prepare("UPDATE categoria SET precoBase = 5000.00 WHERE uuidCategoria = 'cat-1'").run();
+  db.prepare("UPDATE categoria SET precoBase = 5600.00 WHERE uuidCategoria = 'cat-2'").run();
   db.prepare("UPDATE categoria SET precoBase = 5000.00 WHERE uuidCategoria = 'cat-3'").run();
-  db.prepare("UPDATE categoria SET precoBase = 15000.00 WHERE uuidCategoria = 'cat-4'").run();
-  db.prepare("UPDATE categoria SET precoBase = 12000.00 WHERE uuidCategoria = 'cat-5'").run();
+  db.prepare("UPDATE categoria SET precoBase = 7500.00 WHERE uuidCategoria = 'cat-4'").run();
+  db.prepare("UPDATE categoria SET precoBase = 6500.00 WHERE uuidCategoria = 'cat-5'").run();
 }
 
 // Ensure Admin user exists
 const adminExists = db.prepare("SELECT COUNT(*) as count FROM utilizador WHERE email = 'admin@saps.com'").get() as { count: number };
 if (adminExists.count === 0) {
   db.prepare('INSERT INTO utilizador (uuidUtilizador, email, senhaHash, nomeCompleto, nTelefone, tipoUtilizador, dataCadastro) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run('admin-1', 'admin@saps.com', 'admin123', 'Administrador SAPS', '900000000', 'Admin', new Date().toISOString());
+    .run('admin-1', 'admin@saps.com', 'adminhash', 'Administrador SAPS', '924544340', 'Admin', new Date().toISOString());
 }
+
+// Promote user email to Admin if exists
+db.prepare("UPDATE utilizador SET tipoUtilizador = 'Admin' WHERE email = 'orchicomo@gmail.com'").run();
 
 export default db;

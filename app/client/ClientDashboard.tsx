@@ -1,18 +1,19 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { createRequest, rateService, logout, updateUserProfile, updateUserPassword, updateUserPrivacy, getNotifications, markNotificationAsRead, confirmPayment, getClientRequests } from '@/lib/actions';
-import { MapPin, Clock, CheckCircle2, AlertCircle, ArrowLeft, Star, LogOut, Brain, Sparkles, LayoutDashboard, History, User as UserIcon, Settings, Phone, Mail, ShieldCheck, ArrowRight, Save, Lock, Eye, EyeOff, Trash2, TrendingUp, TrendingDown, Minus, Loader2, Bell, X, Wallet, Copy, Check } from 'lucide-react';
+import { createRequest, rateService, updateUserProfile, updateUserPassword, updateUserPrivacy, getNotifications, markNotificationAsRead, confirmPayment, getClientRequests, getProvidersByCategory, logout, toggleBiometrics } from '@/lib/actions';
+import { MapPin, Clock, CheckCircle2, AlertCircle, ArrowLeft, Star, Brain, Sparkles, LayoutDashboard, History, User as UserIcon, Settings, Phone, Mail, ShieldCheck, ArrowRight, Save, Lock, Eye, EyeOff, Trash2, TrendingUp, TrendingDown, Minus, Loader2, Bell, X, Wallet, Copy, Check, Filter, Search, Award, Fingerprint, LogOut, Briefcase } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { GoogleGenAI, Type } from "@google/genai";
+import { generateAIChecklist, matchTechniciansAI, type ChecklistItem } from '@/lib/ai';
 
 export default function ClientDashboard({ categories, initialRequests, userId, userName, userProfile, settings, accounts }: { categories: any[], initialRequests: any[], userId: string, userName: string, userProfile: any, settings: any[], accounts: any[] }) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'home' | 'history' | 'profile'>('home');
-  const [profileSubScreen, setProfileSubScreen] = useState<'main' | 'account' | 'privacy'>('main');
+  const [profileSubScreen, setProfileSubScreen] = useState<'main' | 'account' | 'privacy' | 'biometrics'>('main');
   
   // Requests state
   const [requests, setRequests] = useState(initialRequests);
@@ -34,7 +35,7 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
   const [privacyStatus, setPrivacyStatus] = useState(userProfile?.estadoConta || 'Ativo');
   
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning', text: string } | null>(null);
   const [selectedCategory, setSelectedCategory] = useState('');
   const [description, setDescription] = useState('');
   const [tipoAtendimento, setTipoAtendimento] = useState('Imediato');
@@ -42,8 +43,24 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
   const [complexidade, setComplexidade] = useState('Normal');
   const [zonaAtendimento, setZonaAtendimento] = useState<'Centro' | 'Periferia'>('Centro');
   const [userCoords, setUserCoords] = useState<{ lat: number, lon: number } | null>(null);
-  const [aiPriceAdjustment, setAiPriceAdjustment] = useState(1.0);
+  
+  // Strategy Pricing State
+  const [estimateData, setEstimateData] = useState<{ service: number, travel: number, totalMin: number, totalMax: number, duration: number } | null>(null);
+  const [isGettingEstimate, setIsGettingEstimate] = useState(false);
+  const [showEstimateStep, setShowEstimateStep] = useState(false);
+
+  const [aiPrices, setAiPrices] = useState<{ Normal: number, Médio: number, Alto: number }>({ Normal: 0, Médio: 0, Alto: 0 });
+  const [priceReasoning, setPriceReasoning] = useState('');
   const [isCalculatingPrice, setIsCalculatingPrice] = useState(false);
+
+  // AI Matching state
+  const [aiChecklist, setAiChecklist] = useState<ChecklistItem[]>([]);
+  const [suggestedTags, setSuggestedTags] = useState<string[]>([]);
+  const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+  const [matchedProviders, setMatchedProviders] = useState<any[]>([]);
+  const [isMatchingAI, setIsMatchingAI] = useState(false);
+  const [showAIResults, setShowAIResults] = useState(false);
+  const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null);
   
   // Rating state
   const [ratingRequest, setRatingRequest] = useState<string | null>(null);
@@ -78,6 +95,14 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
   }, [fetchNotifications]);
 
   const unreadCount = notifications.filter(n => !n.lida).length;
+  
+  // Profile Stats
+  const stats = {
+    total: requests.length,
+    completed: requests.filter((r: any) => r.estadoSolicitacao === 'Concluido').length,
+    active: requests.filter((r: any) => r.estadoSolicitacao !== 'Concluido' && r.estadoSolicitacao !== 'Cancelado').length,
+    spent: requests.filter((r: any) => r.estadoSolicitacao === 'Concluido' && r.pagamentoConfirmado === 1).reduce((acc: number, r: any) => acc + r.precoFinal, 0)
+  };
 
   // Payment Modal State
   const [paymentModalData, setPaymentModalData] = useState<{ amount: number, serviceName: string, id: string, reference?: string } | null>(null);
@@ -110,46 +135,42 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
           setUserCoords({ lat: -8.8390, lon: 13.2894 });
           
           let errorMsg = "Erro desconhecido ao obter GPS";
+          let severity: 'error' | 'warning' = 'error';
+
           switch(error.code) {
-            case error.PERMISSION_DENIED:
+            case 1: // PERMISSION_DENIED
               errorMsg = "Permissão de GPS bloqueada. Por favor, abra a aplicação num novo separador para permitir o acesso à localização.";
               break;
-            case error.POSITION_UNAVAILABLE:
-              errorMsg = "Informação de localização indisponível.";
+            case 2: // POSITION_UNAVAILABLE
+              errorMsg = "Informação de localização indisponível no momento.";
+              severity = 'warning';
               break;
-            case error.TIMEOUT:
-              errorMsg = "Tempo esgotado ao obter localização.";
+            case 3: // TIMEOUT
+              errorMsg = "O tempo de resposta do GPS esgotou. Usando localização padrão.";
+              severity = 'warning';
               break;
           }
-          console.error(`Erro ao obter localização GPS (${error.code}): ${error.message || errorMsg}`);
           
-          if (error.code === 1) {
-            setMessage({ 
-              type: 'error', 
-              text: "A localização está bloqueada pelo navegador. Usando localização padrão (Luanda). Para usar o seu GPS real, abra a aplicação num novo separador." 
-            });
-          }
+          console.warn(`Aviso de localização GPS (${error.code}): ${error.message || errorMsg}`);
+          
+          setMessage({ 
+            type: severity, 
+            text: `${errorMsg} Usando localização padrão (Luanda).` 
+          });
         },
         {
           enableHighAccuracy: false,
-          timeout: 10000,
-          maximumAge: 60000
+          timeout: 20000, // Increased timeout to 20 seconds
+          maximumAge: 300000 // Cache for 5 minutes
         }
       );
     }
   }, []);
 
   const selectedCatData = categories.find(c => c.uuidCategoria === selectedCategory);
-  const basePrice = selectedCatData?.precoBase || 0;
 
   const calculatePrice = (level: 'Normal' | 'Médio' | 'Alto') => {
-    const complexityMultipliers = {
-      'Normal': 1.0,
-      'Médio': 1.2,
-      'Alto': 1.4
-    };
-    const zoneMultiplier = zonaAtendimento === 'Periferia' ? 0.85 : 1.0; // 15% discount for peripheries
-    return basePrice * complexityMultipliers[level] * aiPriceAdjustment * zoneMultiplier;
+    return aiPrices[level] || 0;
   };
 
   const prices = {
@@ -160,51 +181,76 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
 
   useEffect(() => {
     if (!selectedCategory || description.length < 5) {
-      setAiPriceAdjustment(1.0);
+      setAiPrices({ Normal: 0, Médio: 0, Alto: 0 });
+      setPriceReasoning('');
       return;
     }
 
     const calculateDynamicPricing = async () => {
       setIsCalculatingPrice(true);
       try {
-        const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY as string });
-        const response = await ai.models.generateContent({
+        const ai = new GoogleGenAI({ apiKey: process.env.NEXT_PUBLIC_GEMINI_API_KEY });
+        const response = await ai.models.generateContent({ 
           model: "gemini-3-flash-preview",
-          contents: `Analise a seguinte solicitação de serviço para determinar o fator de ajuste de preço e a localização (Centro vs Periferia).
-          Categoria: ${selectedCatData?.nomeCategoria}
-          Descrição: ${description}
-          Coordenadas GPS: ${userCoords ? `Lat: ${userCoords.lat}, Lon: ${userCoords.lon}` : 'Não disponíveis'}
-          Hora Atual: ${new Date().toLocaleTimeString()}
-          
-          Regras de Localização:
-          - Use as coordenadas GPS (se disponíveis) para identificar se o local é no "Centro" ou "Periferia" de Luanda/Angola.
-          - Se as coordenadas não estiverem disponíveis, use o contexto da descrição.
-          - "Centro" inclui áreas urbanas centrais e zonas comerciais. "Periferia" inclui bairros mais afastados.
-          
-          Regras de Preço:
-          1. O fator deve estar entre 0.80 (baixa demanda/periferia) e 1.15 (alta demanda/urgência/centro).
-          2. Considere que descrições mais complexas ou urgentes aumentam o fator.
-          3. Se a zona for "Periferia", aplique fatores mais baixos (0.80-0.95).
-          4. Retorne o resultado no formato JSON.`,
           config: {
             responseMimeType: "application/json",
             responseSchema: {
               type: Type.OBJECT,
               properties: {
-                factor: { type: Type.NUMBER, description: "O fator de ajuste de preço entre 0.80 e 1.15" },
-                zone: { type: Type.STRING, enum: ["Centro", "Periferia"], description: "A zona detectada" }
+                priceNormal: { type: Type.NUMBER, description: "Preço de mão de obra Normal em Kz" },
+                priceMedio: { type: Type.NUMBER, description: "Preço de mão de obra Médio em Kz" },
+                priceAlto: { type: Type.NUMBER, description: "Preço de mão de obra Alto em Kz" },
+                zone: { type: Type.STRING, description: "A zona detectada (Centro ou Periferia)" },
+                suggestedLevel: { type: Type.STRING, description: "O nível sugerido baseado na descrição (Normal, Médio ou Alto)" },
+                reason: { type: Type.STRING, description: "Justificativa curta enfatizando que o preço é apenas mão de obra" }
               },
-              required: ["factor", "zone"]
+              required: ["priceNormal", "priceMedio", "priceAlto", "zone", "suggestedLevel", "reason"]
             }
-          }
+          },
+          contents: `Analize a seguinte solicitação de serviço para determinar os valores de MÃO DE OBRA (Labor).
+          O PREÇO É DINÂMICO E DEVE REFLETIR A REALIDADE ECONÓMICA DE LUANDA, ANGOLA.
+          
+          Contexto de Mercado:
+          - A Mão de Obra deve ser acessível e competitiva. Evite preços inflacionados.
+          - Valor de Mercado de Referência para esta categoria: ${selectedCatData?.precoBase ?? '2500'} Kz.
+          - Use este valor apenas como âncora inicial e ajuste conforme o esforço real.
+          
+          Considere para o AJUSTE REAL:
+          1. DEMANDA: Urgência e horário (serviços noturnos ou imediatos podem ter pequeno acréscimo).
+          2. DIFICULDADE: Complexidade técnica real (não superestime tarefas simples).
+          3. RISCO: Riscos envolvidos.
+          4. LOCALIZAÇÃO: Custos de deslocação para ${zonaAtendimento || 'Centro'}.
+          
+          IMPORTANTE: O valor é APENAS mão de obra. Materiais são à parte.
+          
+          Dados do Pedido:
+          Categoria: ${selectedCatData?.nomeCategoria}
+          Descrição: ${description}
+          Tipo: ${tipoAtendimento}
+          Hora: ${new Date().toLocaleTimeString()}
+          
+          Retorne os valores sugeridos para 3 níveis de complexidade em Kz. Seja realista e justo.`
         });
 
-        const result = JSON.parse(response.text || '{"factor": 1.0, "zone": "Centro"}');
-        setAiPriceAdjustment(result.factor || 1.0);
-        setZonaAtendimento(result.zone || 'Centro');
-      } catch (error) {
+        const resultText = response && response.text ? response.text.trim() : '';
+        const data = JSON.parse(resultText || '{"priceNormal": 0, "priceMedio": 0, "priceAlto": 0, "zone": "Centro", "suggestedLevel": "Normal", "reason": "Erro no cálculo."}');
+        
+        if (data.priceNormal > 0) {
+          setAiPrices({
+            Normal: data.priceNormal,
+            Médio: data.priceMedio,
+            Alto: data.priceAlto
+          });
+          setZonaAtendimento(prev => prev !== data.zone ? (data.zone || 'Centro') : prev);
+          setComplexidade(prev => prev !== data.suggestedLevel ? (data.suggestedLevel || 'Normal') : prev);
+          setPriceReasoning(data.reason || '');
+        }
+      } catch (error: any) {
         console.error("Erro ao calcular preço dinâmico:", error);
-        setAiPriceAdjustment(1.0);
+        // If it's a "Failed to fetch", it's likely a network issue with Gemini API
+        if (error.message?.includes('fetch')) {
+          setMessage({ type: 'error', text: 'Erro ao contactar serviço de IA. Verifique a sua ligação.' });
+        }
       } finally {
         setIsCalculatingPrice(false);
       }
@@ -212,11 +258,83 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
 
     const debounceTimer = setTimeout(calculateDynamicPricing, 1000);
     return () => clearTimeout(debounceTimer);
-  }, [selectedCategory, description, selectedCatData, userCoords]);
+  }, [selectedCategory, description, selectedCatData, userCoords, tipoAtendimento, zonaAtendimento]);
 
   const handleLogout = async () => {
     await logout();
-    router.push('/');
+  };
+
+  const handleToggleBiometrics = async (enabled: boolean) => {
+    setIsSubmitting(true);
+    try {
+      const credentialId = enabled ? `cred_${Math.random().toString(36).substring(7)}` : undefined;
+      const publicKey = enabled ? `pub_${Math.random().toString(36).substring(7)}` : undefined;
+      
+      const res = await toggleBiometrics(userId, enabled, credentialId, publicKey);
+      if (res.success) {
+        // Success
+      } else {
+        alert('Erro ao alterar biometria');
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAnalyzeWithAI = async () => {
+    if (!selectedCategory || !description) {
+      setMessage({ type: 'error', text: 'Selecione uma categoria e descreva o problema primeiro.' });
+      return;
+    }
+    
+    setIsAnalyzingAI(true);
+    try {
+      const data = await generateAIChecklist(selectedCatData?.nomeCategoria || 'Serviço', description);
+      setAiChecklist(data.checklist);
+      setSuggestedTags(data.suggestedTags);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsAnalyzingAI(false);
+    }
+  };
+
+  const handleMatchWithAI = async () => {
+    if (!selectedCategory) return;
+    setIsMatchingAI(true);
+    try {
+      const providers = await getProvidersByCategory(selectedCategory);
+      const matches = await matchTechniciansAI(description, aiChecklist, providers);
+      
+      const enrichedProviders = providers.map((p: any) => {
+        const match = matches.find((m: any) => m.uuidUtilizador === p.uuidUtilizador);
+        return { ...p, ...match };
+      }).sort((a: any, b: any) => (b.matchScore || 0) - (a.matchScore || 0));
+      
+      setMatchedProviders(enrichedProviders);
+      setShowAIResults(true);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsMatchingAI(false);
+    }
+  };
+
+  const calculateEstimate = async () => {
+    if (!selectedCategory || !description) return;
+    setIsGettingEstimate(true);
+    try {
+      const { getSmartEstimate } = await import('@/lib/actions');
+      const data = await getSmartEstimate(selectedCategory, complexidade, zonaAtendimento);
+      setEstimateData(data);
+      setShowEstimateStep(true);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsGettingEstimate(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -236,7 +354,9 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
         dataProgramada: tipoAtendimento === 'Agendado' ? new Date(dataProgramada).toISOString() : new Date().toISOString(),
         complexidade,
         zonaAtendimento,
-        precoFinal: prices[complexidade as keyof typeof prices],
+        precoFinal: estimateData?.totalMin || prices[complexidade as keyof typeof prices],
+        uuidPrestador: selectedProviderId || undefined,
+        iaJustificativaPreco: priceReasoning
       });
       if (res.success) {
         await fetchRequests();
@@ -246,7 +366,15 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
         setDataProgramada('');
         setComplexidade('Normal');
         setZonaAtendimento('Centro');
-        setAiPriceAdjustment(1.0);
+        setAiPrices({ Normal: 0, Médio: 0, Alto: 0 });
+        setPriceReasoning('');
+        setAiChecklist([]);
+        setSuggestedTags([]);
+        setSelectedProviderId(null);
+        setMatchedProviders([]);
+        setShowAIResults(false);
+        setEstimateData(null);
+        setShowEstimateStep(false);
         setMessage({ type: 'success', text: 'Pedido enviado com sucesso!' });
         setActiveTab('history'); 
       } else {
@@ -344,6 +472,7 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
       case 'Pendente': return 'bg-yellow-100 text-yellow-800';
       case 'Aceite': return 'bg-blue-100 text-blue-800';
       case 'Em curso': return 'bg-purple-100 text-purple-800';
+      case 'Aguardando Aprovação Preço': return 'bg-indigo-100 text-indigo-800';
       case 'Concluido': return 'bg-green-100 text-green-800';
       case 'Cancelado': return 'bg-red-100 text-red-800';
       default: return 'bg-gray-100 text-gray-800';
@@ -351,7 +480,8 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
   };
 
   return (
-    <div className="min-h-screen bg-slate-50/50 pb-24 font-sans">
+    <>
+      <div className="min-h-screen bg-slate-50/50 pb-24 font-sans">
       <header className="bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-4 sticky top-0 z-30">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -382,9 +512,7 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
             </div>
           </div>
           {activeTab === 'profile' && profileSubScreen === 'main' && (
-            <button onClick={handleLogout} className="text-red-600 p-2 rounded-lg hover:bg-red-50 transition-colors">
-              <LogOut className="w-5 h-5" />
-            </button>
+            <div className="w-10" />
           )}
 
           <div className="relative">
@@ -659,154 +787,225 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
                     </div>
                   )}
                 </div>
-                
-                <form onSubmit={handleSubmit} className="space-y-12">
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-12">
                     <div className="lg:col-span-7 space-y-10">
-                      <div className="space-y-4">
-                        <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">O que está a acontecer?</label>
-                        <textarea 
-                          value={description}
-                          onChange={(e) => setDescription(e.target.value)}
-                          rows={5}
-                          className="w-full rounded-3xl border-slate-100 border-2 bg-slate-50/30 px-6 py-5 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none resize-none font-medium text-slate-700 transition-all text-lg placeholder:text-slate-300"
-                          placeholder="Ex: A torneira da cozinha está a pingar muito e preciso de reparação urgente..."
-                          required
-                        />
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                        <div className="space-y-4">
-                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Urgência</label>
-                          <div className="flex p-1.5 bg-slate-100 rounded-[1.5rem]">
-                            <button 
-                              type="button"
-                              onClick={() => setTipoAtendimento('Imediato')}
-                              className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${tipoAtendimento === 'Imediato' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
-                            >
-                              <Sparkles className="w-4 h-4" />
-                              Agora
-                            </button>
-                            <button 
-                              type="button"
-                              onClick={() => setTipoAtendimento('Agendado')}
-                              className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${tipoAtendimento === 'Agendado' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
-                            >
-                              <Clock className="w-4 h-4" />
-                              Depois
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="space-y-4">
-                          <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Localização</label>
-                          <div className="flex p-1.5 bg-slate-100 rounded-[1.5rem]">
-                            {(['Centro', 'Periferia'] as const).map((z) => (
-                              <button
-                                key={z}
-                                type="button"
-                                onClick={() => setZonaAtendimento(z)}
-                                className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${zonaAtendimento === z ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
-                              >
-                                {z}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      <AnimatePresence>
-                        {tipoAtendimento === 'Agendado' && (
+                      <AnimatePresence mode='wait'>
+                        {!showEstimateStep ? (
                           <motion.div 
-                            initial={{ opacity: 0, y: -20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0, y: -20 }}
-                            className="space-y-4"
+                            key="input-step"
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: -20 }}
+                            className="space-y-10"
                           >
-                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Data e Hora</label>
-                            <input 
-                              type="datetime-local" 
-                              value={dataProgramada}
-                              onChange={(e) => setDataProgramada(e.target.value)}
-                              className="w-full rounded-2xl border-slate-100 border-2 bg-slate-50/30 px-6 py-4 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none font-bold text-slate-700 transition-all"
-                              required
-                            />
+                            <div className="space-y-4">
+                              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Complexidade do Problema</label>
+                              <div className="grid grid-cols-3 gap-3 p-1.5 bg-slate-100 rounded-[1.5rem]">
+                                {(['Simples', 'Normal', 'Complexo'] as const).map((c) => (
+                                  <button
+                                    key={c}
+                                    type="button"
+                                    onClick={() => setComplexidade(c)}
+                                    className={`py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${complexidade === c ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
+                                  >
+                                    {c}
+                                  </button>
+                                ))}
+                              </div>
+                              <p className="text-[10px] text-slate-400 font-bold px-2 italic">
+                                {complexidade === 'Simples' && 'Estimativa automática baseada em tarefas comuns.'}
+                                {complexidade === 'Normal' && 'Faixa de preço sugerida pelo sistema.'}
+                                {complexidade === 'Complexo' && 'Requer orçamentos detalhados dos técnicos.'}
+                              </p>
+                            </div>
+
+                            <div className="space-y-4">
+                              <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">O que está a acontecer?</label>
+                              <textarea 
+                                value={description}
+                                onChange={(e) => setDescription(e.target.value)}
+                                rows={5}
+                                className="w-full rounded-3xl border-slate-100 border-2 bg-slate-50/30 px-6 py-5 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none resize-none font-medium text-slate-700 transition-all text-lg placeholder:text-slate-300"
+                                placeholder="Ex: Tomada não funciona / Torneira a pingar..."
+                                required
+                              />
+
+                              <div className="flex flex-wrap items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={handleAnalyzeWithAI}
+                                  disabled={isAnalyzingAI || !description || !selectedCategory}
+                                  className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-blue-700 disabled:opacity-50 transition-all shadow-lg shadow-blue-100"
+                                >
+                                  {isAnalyzingAI ? <Loader2 className="w-4 h-4 animate-spin" /> : <Brain className="w-4 h-4" />}
+                                  Refinar com IA
+                                </button>
+                              </div>
+                            </div>
+                            
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                              <div className="space-y-4">
+                                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Urgência</label>
+                                <div className="flex p-1.5 bg-slate-100 rounded-[1.5rem]">
+                                  <button 
+                                    type="button"
+                                    onClick={() => setTipoAtendimento('Imediato')}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${tipoAtendimento === 'Imediato' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
+                                  >
+                                    <Sparkles className="w-4 h-4" />
+                                    Agora
+                                  </button>
+                                  <button 
+                                    type="button"
+                                    onClick={() => setTipoAtendimento('Agendado')}
+                                    className={`flex-1 flex items-center justify-center gap-2 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${tipoAtendimento === 'Agendado' ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
+                                  >
+                                    <Clock className="w-4 h-4" />
+                                    Depois
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="space-y-4">
+                                <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Zona</label>
+                                <div className="flex p-1.5 bg-slate-100 rounded-[1.5rem]">
+                                  {(['Centro', 'Periferia'] as const).map((z) => (
+                                    <button
+                                      key={z}
+                                      type="button"
+                                      onClick={() => setZonaAtendimento(z)}
+                                      className={`flex-1 py-4 rounded-2xl font-black text-xs uppercase tracking-widest transition-all ${zonaAtendimento === z ? 'bg-white text-blue-600 shadow-xl' : 'text-slate-500 hover:text-slate-700'}`}
+                                    >
+                                      {z}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={calculateEstimate}
+                              disabled={!selectedCategory || !description || isGettingEstimate}
+                              className="w-full bg-slate-900 text-white font-display font-black text-lg py-5 px-8 rounded-2xl hover:bg-black transition-all flex items-center justify-center gap-3"
+                            >
+                              {isGettingEstimate ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Ver Estimativa'}
+                              <ArrowRight className="w-5 h-5" />
+                            </button>
+                          </motion.div>
+                        ) : (
+                          <motion.div 
+                            key="estimate-step"
+                            initial={{ opacity: 0, x: 20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            exit={{ opacity: 0, x: 20 }}
+                            className="bg-white rounded-[2.5rem] border border-slate-200 p-10 space-y-8 relative overflow-hidden"
+                          >
+                             <div className="absolute top-0 right-0 p-4">
+                              <button onClick={() => setShowEstimateStep(false)} className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-900 transition-all">
+                                <X className="w-5 h-5" />
+                              </button>
+                            </div>
+
+                            <div>
+                              <p className="text-[10px] font-black text-blue-600 uppercase tracking-[0.2em] mb-4">💰 Estratégia de Preço SAPS</p>
+                              <div className="flex items-center gap-4 mb-8">
+                                <div className="w-12 h-12 rounded-2xl bg-slate-100 flex items-center justify-center">
+                                  <Briefcase className="w-6 h-6 text-slate-900" />
+                                </div>
+                                <div className="flex-1">
+                                  <h4 className="font-display font-black text-xl text-slate-900">Serviço: {selectedCatData?.nomeCategoria}</h4>
+                                  <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
+                                    <MapPin className="w-3 h-3 text-red-500" />
+                                    {zonaAtendimento} • <span className="text-slate-900">{description}</span>
+                                  </p>
+                                </div>
+                              </div>
+
+                              <div className="space-y-4 border-t border-b border-slate-100 py-8">
+                                <div className="flex justify-between items-center text-sm">
+                                  <div className="flex items-center gap-2 font-medium text-slate-500">
+                                    <TrendingUp className="w-4 h-4" /> Deslocamento
+                                  </div>
+                                  <div className="font-black text-slate-900">{estimateData?.travel.toLocaleString()} Kz</div>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
+                                  <div className="flex items-center gap-2 font-medium text-slate-500">
+                                    <CheckCircle2 className="w-4 h-4 text-green-500" /> Serviço ({complexidade})
+                                  </div>
+                                  <div className="font-black text-slate-900">{estimateData?.service.toLocaleString()} Kz</div>
+                                </div>
+                                <div className="flex justify-between items-center text-sm">
+                                  <div className="flex items-center gap-2 font-medium text-slate-500">
+                                    <Clock className="w-4 h-4 text-blue-500" /> Tempo Estimado
+                                  </div>
+                                  <div className="font-black text-slate-900">{estimateData?.duration}h</div>
+                                </div>
+                              </div>
+
+                              <div className="bg-slate-50 rounded-[2rem] p-8 text-center mt-8">
+                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">Total Estimado</p>
+                                <div className="text-4xl font-display font-black text-slate-900 tracking-tighter">
+                                  {estimateData?.totalMin.toLocaleString()} - {estimateData?.totalMax.toLocaleString()} Kz
+                                </div>
+                                <p className="mt-4 text-[10px] text-slate-400 font-bold uppercase tracking-wide leading-tight">
+                                  ⚠️ RN01: O valor final depende de avaliação presencial.<br/>
+                                  Ajustes feitos pelo técnico exigem sua aprovação (RN03).
+                                </p>
+                              </div>
+
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-10">
+                                <button
+                                  type="button"
+                                  onClick={handleSubmit}
+                                  disabled={isSubmitting}
+                                  className="w-full bg-slate-900 text-white font-display font-black text-lg py-5 rounded-2xl hover:bg-black transition-all flex items-center justify-center gap-3"
+                                >
+                                  {isSubmitting ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Confirmar Pedido'}
+                                  <Check className="w-5 h-5" />
+                                </button>
+                                
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setComplexidade('Complexo');
+                                    handleSubmit({ preventDefault: () => {} } as any);
+                                  }}
+                                  className="w-full bg-blue-600 text-white font-display font-black text-lg py-5 rounded-2xl hover:bg-blue-700 transition-all flex items-center justify-center gap-3"
+                                >
+                                  Receber Orçamentos
+                                  <Sparkles className="w-5 h-5" />
+                                </button>
+                              </div>
+                            </div>
                           </motion.div>
                         )}
                       </AnimatePresence>
                     </div>
 
                     <div className="lg:col-span-5 space-y-8">
-                      <div className="bg-slate-50 rounded-[2.5rem] p-8 border border-slate-100">
-                        <div className="flex items-center justify-between mb-8">
-                          <h3 className="text-sm font-black text-slate-900 uppercase tracking-widest">Resumo do Orçamento</h3>
-                          {isCalculatingPrice && <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />}
+                      {/* Pricing AI (Still available as complementary data) */}
+                      <div className="bg-slate-50/50 rounded-[2.5rem] p-8 border border-slate-100">
+                        <div className="flex items-center gap-3 mb-6">
+                          <Eye className="w-4 h-4 text-blue-600" />
+                          <h3 className="text-[10px] font-black text-slate-900 uppercase tracking-widest">Inteligência de Mercado</h3>
                         </div>
-
-                        <div className="space-y-4">
-                          {(['Normal', 'Médio', 'Alto'] as const).map((level) => (
-                            <button
-                              key={level}
-                              type="button"
-                              onClick={() => setComplexidade(level)}
-                              className={`w-full flex items-center justify-between p-6 rounded-[2rem] border-2 transition-all ${
-                                complexidade === level 
-                                ? 'border-blue-600 bg-white shadow-xl shadow-blue-100/50' 
-                                : 'border-transparent bg-white/50 hover:bg-white hover:border-slate-200'
-                              }`}
-                            >
-                              <div className="text-left">
-                                <span className={`block text-[10px] font-black uppercase tracking-widest mb-1 ${complexidade === level ? 'text-blue-600' : 'text-slate-400'}`}>
-                                  Nível {level}
-                                </span>
-                                <span className={`text-xl font-display font-black ${complexidade === level ? 'text-slate-900' : 'text-slate-400'}`}>
-                                  {prices[level].toLocaleString('pt-AO', { minimumFractionDigits: 0 })} Kz
-                                </span>
-                              </div>
-                              {complexidade === level && (
-                                <div className="w-8 h-8 rounded-full bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-200">
-                                  <CheckCircle2 className="w-5 h-5 text-white" />
-                                </div>
-                              )}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="mt-8 pt-8 border-t border-slate-200 space-y-3">
-                          <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-widest">
-                            <span>Preço Base</span>
-                            <span>{basePrice.toLocaleString('pt-AO')} Kz</span>
+                        <p className="text-[10px] text-slate-400 font-bold leading-relaxed mb-6">
+                          O SAPS analisa o histórico de serviços em {zonaAtendimento} para garantir orçamentos justos.
+                        </p>
+                        {priceReasoning && (
+                          <div className="bg-white p-4 rounded-2xl border border-slate-100">
+                             <p className="text-[10px] text-slate-600 font-medium leading-relaxed italic">&quot;{priceReasoning}&quot;</p>
                           </div>
-                          <div className="flex justify-between text-xs font-bold text-blue-600 uppercase tracking-widest">
-                            <span>Ajuste IA</span>
-                            <span>x{aiPriceAdjustment.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <button 
-                        type="submit" 
-                        disabled={isSubmitting || !selectedCategory || !description || (tipoAtendimento === 'Agendado' && !dataProgramada)}
-                        className="w-full bg-slate-900 text-white font-display font-black text-xl py-6 px-8 rounded-[2rem] hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed transition-all active:scale-[0.98] shadow-2xl shadow-slate-200 flex items-center justify-center gap-4 group"
-                      >
-                        {isSubmitting ? (
-                          <Loader2 className="w-6 h-6 animate-spin" />
-                        ) : (
-                          <>
-                            Enviar Solicitação
-                            <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center group-hover:bg-white/20 transition-colors">
-                              <ArrowRight className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
-                            </div>
-                          </>
                         )}
-                      </button>
+                      </div>
                     </div>
                   </div>
-                </form>
-              </div>
-            </section>
-          </div>
-        )}
+                </div>
+              </section>
+            </div>
+          )}
 
         {activeTab === 'history' && (
           <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-700">
@@ -913,6 +1112,23 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
                     </div>
                     
                     <div className="flex flex-col items-end gap-2">
+                      {req.estadoSolicitacao === 'Aguardando Aprovação Preço' && (
+                        <button
+                          onClick={async () => {
+                            setIsSubmitting(true);
+                            const { approvePriceChange } = await import('@/lib/actions');
+                            const res = await approvePriceChange(req.uuidSolicitacao);
+                            if (res.success) {
+                              await fetchRequests();
+                              setMessage({ type: 'success', text: 'Ajuste de preço aprovado!' });
+                            }
+                            setIsSubmitting(false);
+                          }}
+                          className="bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest px-4 py-2 rounded-xl hover:bg-blue-700 transition-all shadow-lg shadow-blue-100 mb-2"
+                        >
+                          Aprovar Novo Preço
+                        </button>
+                      )}
                       {req.estadoSolicitacao === 'Concluido' && (
                         <div className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-widest ${req.pagamentoConfirmado ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600'}`}>
                           {req.pagamentoConfirmado ? 'Pago' : 'Pendente de Pagamento'}
@@ -999,158 +1215,232 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
       )}
 
         {activeTab === 'profile' && (
-          <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-700">
             {message && (
               <div className={`p-4 rounded-2xl flex items-center gap-3 text-sm font-medium animate-in fade-in zoom-in-95 ${
-                message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 'bg-red-50 text-red-700 border border-red-100'
+                message.type === 'success' ? 'bg-green-50 text-green-700 border border-green-100' : 
+                message.type === 'warning' ? 'bg-yellow-50 text-yellow-700 border border-yellow-100' :
+                'bg-red-50 text-red-700 border border-red-100'
               }`}>
-                {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : <AlertCircle className="w-5 h-5" />}
+                {message.type === 'success' ? <CheckCircle2 className="w-5 h-5" /> : 
+                 message.type === 'warning' ? <AlertCircle className="w-5 h-5" /> :
+                 <AlertCircle className="w-5 h-5" />}
                 {message.text}
               </div>
             )}
-
             {profileSubScreen === 'main' && (
-              <div className="space-y-6">
-                {/* Perfil Card */}
-                <div className="bg-white rounded-3xl shadow-sm border border-gray-100 p-8 text-center">
-                  <div className="w-24 h-24 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4 border-4 border-white shadow-sm">
-                    <UserIcon className="w-12 h-12 text-blue-600" />
-                  </div>
-                  <h2 className="text-2xl font-bold text-gray-900">{userName}</h2>
-                  <p className="text-gray-500 text-sm mb-6">Cliente SAPS</p>
-                  
-                  <div className="grid grid-cols-1 gap-3 text-left">
-                    <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <div className="bg-white p-2 rounded-lg shadow-sm">
-                        <Mail className="w-4 h-4 text-blue-600" />
+              <div className="space-y-8">
+                {/* Profile Header Hero */}
+                <div className="relative bg-white rounded-[3rem] shadow-2xl shadow-slate-200/60 overflow-hidden border border-slate-100">
+                  <div className="absolute top-0 left-0 w-full h-32 bg-gradient-to-r from-blue-600 to-indigo-700" />
+                  <div className="relative pt-12 md:pt-16 px-6 md:px-8 pb-8 md:pb-10 text-center">
+                    <div className="inline-block relative">
+                      <div className="w-24 h-24 md:w-32 md:h-32 bg-white rounded-full flex items-center justify-center mx-auto border-[6px] border-white shadow-xl relative z-10">
+                        <UserIcon className="w-12 h-12 md:w-16 md:h-16 text-slate-900" />
                       </div>
-                      <div>
-                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Email</p>
-                        <p className="text-sm font-medium text-gray-700">{userProfile?.email}</p>
-                      </div>
+                      <div className="absolute -bottom-1 -right-1 bg-green-500 w-6 h-6 md:w-8 md:h-8 rounded-full border-4 border-white z-20" />
                     </div>
-                    <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-2xl border border-gray-100">
-                      <div className="bg-white p-2 rounded-lg shadow-sm">
-                        <Phone className="w-4 h-4 text-blue-600" />
+                    <h2 className="mt-4 text-2xl md:text-3xl font-display font-black text-slate-900 tracking-tight">{userName}</h2>
+                    <p className="text-slate-400 text-[10px] md:text-sm font-bold uppercase tracking-widest mt-1">Nível Bronze • Membro desde 2024</p>
+                    
+                    <div className="grid grid-cols-3 gap-3 md:gap-6 mt-8 md:mt-10">
+                      <div className="bg-slate-50/50 rounded-2xl md:rounded-3xl p-3 md:p-4 border border-slate-100 flex flex-col items-center">
+                        <span className="text-xl md:text-2xl font-display font-black text-slate-900">{stats.total}</span>
+                        <span className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Pedidos</span>
                       </div>
-                      <div>
-                        <p className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Telefone</p>
-                        <p className="text-sm font-medium text-gray-700">{userProfile?.nTelefone}</p>
+                      <div className="bg-slate-50/50 rounded-2xl md:rounded-3xl p-3 md:p-4 border border-slate-100 flex flex-col items-center">
+                        <span className="text-xl md:text-2xl font-display font-black text-blue-600">{stats.completed}</span>
+                        <span className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Concluídos</span>
+                      </div>
+                      <div className="bg-slate-50/50 rounded-2xl md:rounded-3xl p-3 md:p-4 border border-slate-100 flex flex-col items-center">
+                        <span className="text-xl md:text-2xl font-display font-black text-emerald-600">
+                          {stats.spent > 1000 ? `${(stats.spent / 1000).toFixed(1)}k` : stats.spent}
+                        </span>
+                        <span className="text-[8px] md:text-[9px] font-black text-slate-400 uppercase tracking-widest mt-1">Investido</span>
                       </div>
                     </div>
                   </div>
                 </div>
 
-                {/* Configurações Rápidas */}
-                <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-                  <button onClick={() => setProfileSubScreen('account')} className="w-full flex items-center justify-between p-5 hover:bg-gray-50 transition-colors border-b border-gray-50">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-blue-50 p-2 rounded-xl">
-                        <Settings className="w-5 h-5 text-blue-600" />
+                {/* Bento Grid Info */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6">
+                    <motion.div 
+                      whileHover={{ y: -4 }}
+                      className="bg-white p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100"
+                    >
+                      <div className="w-8 h-8 md:w-10 md:h-10 bg-blue-50 rounded-xl flex items-center justify-center mb-4">
+                        <Mail className="w-4 h-4 md:w-5 md:h-5 text-blue-600" />
                       </div>
-                      <span className="font-semibold text-gray-700">Definições da Conta</span>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-gray-300" />
-                  </button>
-                  <button onClick={() => setProfileSubScreen('privacy')} className="w-full flex items-center justify-between p-5 hover:bg-gray-50 transition-colors border-b border-gray-50">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-green-50 p-2 rounded-xl">
-                        <ShieldCheck className="w-5 h-5 text-green-600" />
+                      <p className="text-[9px] md:text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1">Email Principal</p>
+                      <p className="text-md md:text-lg font-bold text-slate-900 truncate">{userProfile?.email}</p>
+                    </motion.div>
+                    
+                    <motion.div 
+                      whileHover={{ y: -4 }}
+                      className="bg-white p-6 md:p-8 rounded-[2rem] md:rounded-[2.5rem] shadow-xl shadow-slate-200/50 border border-slate-100"
+                    >
+                      <div className="w-8 h-8 md:w-10 md:h-10 bg-indigo-50 rounded-xl flex items-center justify-center mb-4">
+                        <Phone className="w-4 h-4 md:w-5 md:h-5 text-indigo-600" />
                       </div>
-                      <span className="font-semibold text-gray-700">Privacidade e Segurança</span>
-                    </div>
-                    <ArrowRight className="w-4 h-4 text-gray-300" />
-                  </button>
-                  <button onClick={handleLogout} className="w-full flex items-center justify-between p-5 hover:bg-red-50 transition-colors text-red-600">
-                    <div className="flex items-center gap-4">
-                      <div className="bg-red-50 p-2 rounded-xl">
-                        <LogOut className="w-5 h-5 text-red-600" />
+                      <p className="text-[9px] md:text-[10px] text-slate-400 font-black uppercase tracking-widest mb-1">Contacto Telefónico</p>
+                      <p className="text-md md:text-lg font-bold text-slate-900">{userProfile?.nTelefone || 'Não definido'}</p>
+                    </motion.div>
+                  </div>
+
+                {/* Action Cards */}
+                <div className="space-y-4">
+                  <h3 className="text-xs font-black text-slate-900 uppercase tracking-[0.2em] ml-2">Definições</h3>
+                  <div className="bg-white rounded-[3rem] shadow-xl shadow-slate-200/50 border border-slate-100 overflow-hidden">
+                    <button 
+                      onClick={() => setProfileSubScreen('account')} 
+                      className="w-full flex items-center justify-between p-6 md:p-8 hover:bg-slate-50 transition-all group"
+                    >
+                      <div className="flex items-center gap-4 md:gap-6">
+                        <div className="bg-blue-600/10 p-3 md:p-4 rounded-2xl group-hover:scale-110 transition-transform">
+                          <Settings className="w-5 h-5 md:w-6 md:h-6 text-blue-600" />
+                        </div>
+                        <div className="text-left">
+                          <span className="block font-display font-black text-slate-900 text-md md:text-lg">Informações de Perfil</span>
+                          <span className="text-[10px] md:text-xs text-slate-400 font-medium italic">Gerir nome e telefone</span>
+                        </div>
                       </div>
-                      <span className="font-bold">Terminar Sessão</span>
-                    </div>
-                  </button>
+                      <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-blue-600 group-hover:text-white transition-all">
+                        <ArrowRight className="w-4 h-4 md:w-5 md:h-5" />
+                      </div>
+                    </button>
+
+                    <button 
+                      onClick={() => setProfileSubScreen('biometrics')} 
+                      className="w-full flex items-center justify-between p-6 md:p-8 border-t border-slate-50 hover:bg-slate-50 transition-all group"
+                    >
+                      <div className="flex items-center gap-4 md:gap-6">
+                        <div className="bg-indigo-600/10 p-3 md:p-4 rounded-2xl group-hover:scale-110 transition-transform">
+                          <Fingerprint className="w-5 h-5 md:w-6 md:h-6 text-indigo-600" />
+                        </div>
+                        <div className="text-left">
+                          <span className="block font-display font-black text-slate-900 text-md md:text-lg">Biometria & Segurança</span>
+                          <span className="text-[10px] md:text-xs text-slate-400 font-medium italic">FaceID / Impressão Digital</span>
+                        </div>
+                      </div>
+                      <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-slate-50 flex items-center justify-center group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                        <ArrowRight className="w-4 h-4 md:w-5 md:h-5" />
+                      </div>
+                    </button>
+
+                    <button 
+                      onClick={handleLogout} 
+                      className="w-full flex items-center justify-between p-6 md:p-8 border-t border-slate-50 hover:bg-red-50 transition-all group"
+                    >
+                      <div className="flex items-center gap-4 md:gap-6">
+                        <div className="bg-red-600/10 p-3 md:p-4 rounded-2xl group-hover:scale-110 transition-transform">
+                          <LogOut className="w-5 h-5 md:w-6 md:h-6 text-red-600" />
+                        </div>
+                        <div className="text-left">
+                          <span className="block font-display font-black text-slate-900 text-md md:text-lg">Sair da Conta</span>
+                          <span className="text-[10px] md:text-xs text-slate-400 font-medium italic">Terminar sessão atual</span>
+                        </div>
+                      </div>
+                      <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-red-50 flex items-center justify-center group-hover:bg-red-600 group-hover:text-white transition-all text-red-600">
+                        <ArrowRight className="w-4 h-4 md:w-5 md:h-5" />
+                      </div>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
 
             {profileSubScreen === 'account' && (
-              <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
-                <section className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
-                  <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                    <UserIcon className="w-5 h-5 text-blue-600" />
-                    Informações Pessoais
-                  </h3>
-                  <form onSubmit={handleUpdateProfile} className="space-y-4">
+              <div className="space-y-8 animate-in slide-in-from-right-8 duration-500">
+                <section className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/60 border border-slate-100 p-10">
+                  <div className="flex items-center gap-4 mb-10">
+                    <div className="w-12 h-12 bg-blue-600 rounded-2xl flex items-center justify-center shadow-lg shadow-blue-100">
+                      <UserIcon className="w-6 h-6 text-white" />
+                    </div>
                     <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 ml-1">Nome Completo</label>
+                      <h3 className="text-xl font-display font-black text-slate-900 tracking-tight">Informações Pessoais</h3>
+                      <p className="text-slate-400 text-sm font-medium">Mantenha os seus dados atualizados para melhor contacto</p>
+                    </div>
+                  </div>
+                  
+                  <form onSubmit={handleUpdateProfile} className="space-y-8">
+                    <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Nome Completo</label>
                       <input 
                         type="text" 
                         value={editName}
                         onChange={(e) => setEditName(e.target.value)}
-                        className="w-full rounded-2xl border-gray-200 border px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
+                        className="w-full rounded-2xl border-slate-100 border-2 bg-slate-50/30 px-6 py-4 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none font-bold text-slate-700 transition-all text-lg"
                         required
                       />
                     </div>
-                    <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 ml-1">Telefone</label>
+                    <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Telefone</label>
                       <input 
                         type="tel" 
                         value={editPhone}
                         onChange={(e) => setEditPhone(e.target.value)}
-                        className="w-full rounded-2xl border-gray-200 border px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
+                        className="w-full rounded-2xl border-slate-100 border-2 bg-slate-50/30 px-6 py-4 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none font-bold text-slate-700 transition-all text-lg"
                         required
                       />
                     </div>
                     <button 
                       type="submit" 
                       disabled={isSubmitting}
-                      className="w-full bg-blue-600 text-white font-bold py-4 rounded-2xl hover:bg-blue-700 transition-all flex items-center justify-center gap-2"
+                      className="w-full bg-blue-600 text-white font-display font-black py-6 rounded-[2rem] hover:bg-blue-700 transition-all flex items-center justify-center gap-3 shadow-xl shadow-blue-100 active:scale-95 disabled:opacity-50"
                     >
-                      <Save className="w-5 h-5" />
-                      {isSubmitting ? 'A guardar...' : 'Guardar Alterações'}
+                      <Save className="w-6 h-6" />
+                      {isSubmitting ? 'A GUARDAR...' : 'GUARDAR ALTERAÇÕES'}
                     </button>
                   </form>
                 </section>
 
-                <section className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
-                  <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center gap-2">
-                    <Lock className="w-5 h-5 text-blue-600" />
-                    Alterar Senha
-                  </h3>
-                  <form onSubmit={handleUpdatePassword} className="space-y-4">
-                    <div className="relative">
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 ml-1">Senha Atual</label>
-                      <input 
-                        type={showPasswords ? 'text' : 'password'} 
-                        value={currentPassword}
-                        onChange={(e) => setCurrentPassword(e.target.value)}
-                        className="w-full rounded-2xl border-gray-200 border px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
-                        required
-                      />
-                      <button 
-                        type="button"
-                        onClick={() => setShowPasswords(!showPasswords)}
-                        className="absolute right-4 bottom-3.5 text-gray-400 hover:text-gray-600"
-                      >
-                        {showPasswords ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                      </button>
+                <section className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/60 border border-slate-100 p-10">
+                  <div className="flex items-center gap-4 mb-10">
+                    <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center shadow-lg shadow-slate-200">
+                      <Lock className="w-6 h-6 text-white" />
                     </div>
                     <div>
-                      <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider mb-1 ml-1">Nova Senha</label>
+                      <h3 className="text-xl font-display font-black text-slate-900 tracking-tight">Alterar Senha</h3>
+                      <p className="text-slate-400 text-sm font-medium">Recomendamos trocar a senha a cada 6 meses</p>
+                    </div>
+                  </div>
+
+                  <form onSubmit={handleUpdatePassword} className="space-y-8">
+                    <div className="space-y-4 relative">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Senha Atual</label>
+                      <div className="relative">
+                        <input 
+                          type={showPasswords ? 'text' : 'password'} 
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          className="w-full rounded-2xl border-slate-100 border-2 bg-slate-50/30 px-6 py-4 pr-14 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none font-bold text-slate-700 transition-all text-lg"
+                          required
+                        />
+                        <button 
+                          type="button"
+                          onClick={() => setShowPasswords(!showPasswords)}
+                          className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-400 hover:text-blue-600 transition-colors"
+                        >
+                          {showPasswords ? <EyeOff className="w-6 h-6" /> : <Eye className="w-6 h-6" />}
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                      <label className="block text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] ml-1">Nova Senha</label>
                       <input 
                         type={showPasswords ? 'text' : 'password'} 
                         value={newPassword}
                         onChange={(e) => setNewPassword(e.target.value)}
-                        className="w-full rounded-2xl border-gray-200 border px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none bg-gray-50"
+                        className="w-full rounded-2xl border-slate-100 border-2 bg-slate-50/30 px-6 py-4 focus:ring-8 focus:ring-blue-50 focus:border-blue-600 focus:bg-white outline-none font-bold text-slate-700 transition-all text-lg"
                         required
                       />
                     </div>
                     <button 
                       type="submit" 
                       disabled={isSubmitting || !currentPassword || !newPassword}
-                      className="w-full bg-gray-900 text-white font-bold py-4 rounded-2xl hover:bg-black transition-all"
+                      className="w-full bg-slate-900 text-white font-display font-black py-6 rounded-[2rem] hover:bg-black transition-all shadow-xl shadow-slate-200 active:scale-95 disabled:opacity-50"
                     >
-                      {isSubmitting ? 'A processar...' : 'Atualizar Senha'}
+                      {isSubmitting ? 'A PROCESSAR...' : 'ATUALIZAR SENHA'}
                     </button>
                   </form>
                 </section>
@@ -1158,64 +1448,116 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
             )}
 
             {profileSubScreen === 'privacy' && (
-              <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
-                <section className="bg-white rounded-3xl shadow-sm border border-gray-100 p-6">
-                  <h3 className="text-lg font-bold text-gray-900 mb-2 flex items-center gap-2">
-                    <ShieldCheck className="w-5 h-5 text-green-600" />
-                    Estado da Conta
-                  </h3>
-                  <p className="text-sm text-gray-500 mb-6">Controle a visibilidade e o estado da sua conta no sistema.</p>
+              <div className="space-y-8 animate-in slide-in-from-right-8 duration-500">
+                <section className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/60 border border-slate-100 p-10">
+                  <div className="flex items-center gap-4 mb-4">
+                    <div className="w-12 h-12 bg-green-600 rounded-2xl flex items-center justify-center shadow-lg shadow-green-100">
+                      <ShieldCheck className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-display font-black text-slate-900 tracking-tight">Estado da Conta</h3>
+                      <p className="text-slate-400 text-sm font-medium">Controle como você aparece para os técnicos</p>
+                    </div>
+                  </div>
                   
-                  <div className="space-y-3">
+                  <div className="space-y-4 mt-10">
                     <button 
                       onClick={() => handleUpdatePrivacy('Ativo')}
-                      className={`w-full flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
-                        privacyStatus === 'Ativo' ? 'border-green-600 bg-green-50' : 'border-gray-100 hover:border-gray-200'
+                      className={`w-full flex items-center justify-between p-8 rounded-[2rem] border-2 transition-all ${
+                        privacyStatus === 'Ativo' 
+                        ? 'border-green-600 bg-green-50 shadow-xl shadow-green-100' 
+                        : 'border-slate-50 bg-slate-50/30 hover:border-slate-200 hover:bg-white'
                       }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-3 h-3 rounded-full ${privacyStatus === 'Ativo' ? 'bg-green-600' : 'bg-gray-300'}`} />
+                      <div className="flex items-center gap-6">
+                        <div className={`w-4 h-4 rounded-full ${privacyStatus === 'Ativo' ? 'bg-green-600 ring-8 ring-green-100' : 'bg-slate-300'}`} />
                         <div className="text-left">
-                          <p className="font-bold text-gray-900">Ativo</p>
-                          <p className="text-xs text-gray-500">Conta visível e funcional.</p>
+                          <p className={`font-display font-black text-lg ${privacyStatus === 'Ativo' ? 'text-green-900' : 'text-slate-900'}`}>Modo Ativo</p>
+                          <p className="text-xs text-slate-500 font-medium italic">Conta visível, pedidos e chat habilitados</p>
                         </div>
                       </div>
-                      {privacyStatus === 'Ativo' && <CheckCircle2 className="w-5 h-5 text-green-600" />}
+                      {privacyStatus === 'Ativo' && <CheckCircle2 className="w-6 h-6 text-green-600" />}
                     </button>
 
                     <button 
                       onClick={() => handleUpdatePrivacy('Inativo')}
-                      className={`w-full flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
-                        privacyStatus === 'Inativo' ? 'border-yellow-600 bg-yellow-50' : 'border-gray-100 hover:border-gray-200'
+                      className={`w-full flex items-center justify-between p-8 rounded-[2rem] border-2 transition-all ${
+                        privacyStatus === 'Inativo' 
+                        ? 'border-orange-500 bg-orange-50 shadow-xl shadow-orange-100' 
+                        : 'border-slate-50 bg-slate-50/30 hover:border-slate-200 hover:bg-white'
                       }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <div className={`w-3 h-3 rounded-full ${privacyStatus === 'Inativo' ? 'bg-yellow-600' : 'bg-gray-300'}`} />
+                      <div className="flex items-center gap-6">
+                        <div className={`w-4 h-4 rounded-full ${privacyStatus === 'Inativo' ? 'bg-orange-500 ring-8 ring-orange-100' : 'bg-slate-300'}`} />
                         <div className="text-left">
-                          <p className="font-bold text-gray-900">Inativo</p>
-                          <p className="text-xs text-gray-500">Pausa temporária na conta.</p>
+                          <p className={`font-display font-black text-lg ${privacyStatus === 'Inativo' ? 'text-orange-900' : 'text-slate-900'}`}>Modo Invisível</p>
+                          <p className="text-xs text-slate-500 font-medium italic">Pausa temporária, não receberá novas propostas</p>
                         </div>
                       </div>
-                      {privacyStatus === 'Inativo' && <CheckCircle2 className="w-5 h-5 text-yellow-600" />}
+                      {privacyStatus === 'Inativo' && <CheckCircle2 className="w-6 h-6 text-orange-500" />}
                     </button>
                   </div>
                 </section>
 
-                <section className="bg-red-50 rounded-3xl border border-red-100 p-6">
-                  <h3 className="text-lg font-bold text-red-700 mb-2 flex items-center gap-2">
-                    <Trash2 className="w-5 h-5" />
-                    Zona de Perigo
-                  </h3>
-                  <p className="text-sm text-red-600 mb-4">Ações irreversíveis para a sua conta.</p>
-                  <button className="w-full bg-white text-red-600 border border-red-200 font-bold py-3 rounded-xl hover:bg-red-600 hover:text-white transition-all">
-                    Eliminar Conta Permanentemente
+                <section className="bg-red-50 rounded-[3rem] border border-red-100 p-10">
+                  <div className="flex items-center gap-4 mb-6">
+                    <div className="w-12 h-12 bg-red-600 rounded-2xl flex items-center justify-center shadow-lg shadow-red-200">
+                      <Trash2 className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-display font-black text-red-900 tracking-tight">Zona de Perigo</h3>
+                      <p className="text-red-500 text-sm font-medium">Estas ações são permanentes e não podem ser desfeitas</p>
+                    </div>
+                  </div>
+                  <button className="w-full bg-white text-red-600 border-2 border-red-100 font-display font-black py-4 rounded-2xl hover:bg-red-600 hover:text-white hover:border-red-600 transition-all active:scale-95">
+                    ELIMINAR CONTA PERMANENTEMENTE
                   </button>
                 </section>
               </div>
             )}
 
-            <div className="text-center">
-              <p className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">SAPS v1.0.0 - Angola</p>
+            {profileSubScreen === 'biometrics' && (
+              <div className="space-y-8 animate-in slide-in-from-right-8 duration-500">
+                <section className="bg-white rounded-[3rem] shadow-2xl shadow-slate-200/60 border border-slate-100 p-10">
+                  <div className="flex items-center gap-4 mb-4">
+                    <div className="w-12 h-12 bg-indigo-600 rounded-2xl flex items-center justify-center shadow-lg shadow-indigo-100">
+                      <Fingerprint className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-display font-black text-slate-900 tracking-tight">Biometria</h3>
+                      <p className="text-slate-400 text-sm font-medium">Acesso rápido e seguro</p>
+                    </div>
+                  </div>
+                  
+                  <div className="mt-10 p-8 rounded-[2rem] bg-indigo-50/50 border-2 border-indigo-100 flex items-center justify-between gap-6">
+                    <div>
+                      <p className="font-display font-black text-lg text-indigo-900">Login com Biometria</p>
+                      <p className="text-xs text-indigo-600 font-medium">Use o seu rosto ou impressão digital para entrar.</p>
+                    </div>
+                    <button 
+                      onClick={() => handleToggleBiometrics(!userProfile?.biometriaHabilitada)}
+                      disabled={isSubmitting}
+                      className={`w-14 h-8 rounded-full transition-all relative ${userProfile?.biometriaHabilitada ? 'bg-indigo-600' : 'bg-slate-300'}`}
+                    >
+                      <div className={`absolute top-1 w-6 h-6 bg-white rounded-full transition-all ${userProfile?.biometriaHabilitada ? 'left-7' : 'left-1'}`} />
+                    </button>
+                  </div>
+                  <div className="mt-8 p-6 bg-slate-50 rounded-2xl border border-slate-100 flex items-start gap-4">
+                    <ShieldCheck className="w-5 h-5 text-indigo-600 shrink-0" />
+                    <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+                      A biometria é processada localmente no seu dispositivo. Nós não armazenamos os seus dados biométricos reais, apenas uma chave de verificação segura.
+                    </p>
+                  </div>
+                </section>
+              </div>
+            )}
+
+
+            <div className="text-center pb-8 pt-4">
+              <div className="inline-flex items-center gap-2 px-4 py-2 bg-slate-100 rounded-full">
+                <span className="w-2 h-2 bg-blue-600 rounded-full animate-pulse" />
+                <p className="text-[10px] text-slate-400 font-black uppercase tracking-[0.2em]">SAPS Angola • Versão 2.4.0 (UX Prime)</p>
+              </div>
             </div>
           </div>
         )}
@@ -1250,6 +1592,7 @@ export default function ClientDashboard({ categories, initialRequests, userId, u
         </div>
       </nav>
     </div>
+    </>
   );
 }
 

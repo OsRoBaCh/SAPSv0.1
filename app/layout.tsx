@@ -1,7 +1,8 @@
 import type {Metadata} from 'next';
 import { Inter, Outfit } from 'next/font/google';
 import './globals.css'; // Global styles
-import IdleRedirect from '@/components/IdleRedirect';
+
+import ErrorBoundary from '@/components/ErrorBoundary';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -22,8 +23,9 @@ export default function RootLayout({children}: {children: React.ReactNode}) {
   return (
     <html lang="pt" className={`${inter.variable} ${outfit.variable}`}>
       <body suppressHydrationWarning className="font-sans antialiased text-slate-900">
-        <IdleRedirect />
-        {children}
+        <ErrorBoundary>
+          {children}
+        </ErrorBoundary>
       </body>
     </html>
   );

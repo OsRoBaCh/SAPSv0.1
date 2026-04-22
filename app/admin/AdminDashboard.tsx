@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, cloneElement } from 'react';
+import { useState, useEffect, useCallback, cloneElement } from 'react';
 import { 
   getAdminStats, 
   getAllUsers, 
@@ -18,16 +18,16 @@ import {
   adminCreatePlatformAccount,
   adminUpdatePlatformAccount,
   adminDeletePlatformAccount,
-  logout 
+  logout
 } from '@/lib/actions';
 import { 
   Users, 
+  LogOut,
   Briefcase, 
   TrendingUp, 
   DollarSign, 
   LayoutDashboard, 
   Settings, 
-  LogOut, 
   Search, 
   Filter, 
   MoreVertical, 
@@ -36,17 +36,17 @@ import {
   AlertTriangle, 
   Trash2, 
   Edit, 
-  ChevronRight,
-  Bell,
-  Menu,
-  X,
-  UserCheck,
-  UserX,
-  Shield,
-  Activity,
-  Calendar,
-  MapPin,
-  Clock
+  ChevronRight, 
+  Bell, 
+  Menu, 
+  X, 
+  UserCheck, 
+  UserX, 
+  Shield, 
+  Activity, 
+  Calendar, 
+  MapPin, 
+  Clock 
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useRouter } from 'next/navigation';
@@ -73,6 +73,24 @@ export default function AdminDashboard({
 }: AdminDashboardProps) {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'dashboard' | 'users' | 'requests' | 'categories' | 'finance' | 'system'>('dashboard');
+
+  // Helper for hydration-safe date formatting
+  const formatDate = (date: string | Date, includeTime = true) => {
+    const d = new Date(date);
+    const day = String(d.getDate()).padStart(2, '0');
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const year = d.getFullYear();
+    if (!includeTime) return `${day}/${month}/${year}`;
+    const hours = String(d.getHours()).padStart(2, '0');
+    const minutes = String(d.getMinutes()).padStart(2, '0');
+    const seconds = String(d.getSeconds()).padStart(2, '0');
+    return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+  };
+
+  // Helper for hydration-safe currency formatting
+  const formatKz = (val: number) => {
+    return val.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, " ") + " Kz";
+  };
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [users, setUsers] = useState(initialUsers);
   const [requests, setRequests] = useState(initialRequests);
@@ -86,6 +104,32 @@ export default function AdminDashboard({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
 
+  const fetchAllData = useCallback(async () => {
+    try {
+      const [statsData, usersData, requestsData, categoriesData] = await Promise.all([
+        getAdminStats(),
+        getAllUsers(),
+        getAllRequests(),
+        getCategories()
+      ]);
+      if (statsData) {
+        setStats(statsData.stats);
+        setRecentRequests(statsData.recentRequests);
+        setLogs(statsData.logs);
+      }
+      if (usersData) setUsers(usersData);
+      if (requestsData) setRequests(requestsData);
+      if (categoriesData) setCategories(categoriesData);
+    } catch (error) {
+      console.error('Error refreshing admin data:', error);
+    }
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(fetchAllData, 30000); // 30s poll
+    return () => clearInterval(interval);
+  }, [fetchAllData]);
+
   // New states for modals
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
   const [editingCategory, setEditingCategory] = useState<any>(null);
@@ -96,6 +140,9 @@ export default function AdminDashboard({
   const [isAccountModalOpen, setIsAccountModalOpen] = useState(false);
   const [editingAccount, setEditingAccount] = useState<any>(null);
 
+  // Document viewing state
+  const [viewingDocs, setViewingDocs] = useState<any | null>(null);
+
   // Confirmation modal state
   const [confirmation, setConfirmation] = useState<{ 
     isOpen: boolean, 
@@ -103,11 +150,6 @@ export default function AdminDashboard({
     message: string, 
     onConfirm: () => void 
   } | null>(null);
-
-  const handleLogout = async () => {
-    await logout();
-    router.push('/login');
-  };
 
   const handleUpdateUserStatus = async (userId: string, status: any) => {
     const res = await updateUserStatus(userId, status);
@@ -301,6 +343,7 @@ export default function AdminDashboard({
       case 'Pendente': return 'bg-orange-100 text-orange-600';
       case 'Aceite': return 'bg-blue-100 text-blue-600';
       case 'Em curso': return 'bg-purple-100 text-purple-600';
+      case 'Aguardando Aprovação Preço': return 'bg-indigo-100 text-indigo-600';
       case 'Concluido': return 'bg-green-100 text-green-600';
       case 'Cancelado': return 'bg-red-100 text-red-600';
       default: return 'bg-slate-100 text-slate-600';
@@ -308,7 +351,8 @@ export default function AdminDashboard({
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex">
+    <>
+      <div className="min-h-screen bg-slate-50 flex">
       {/* Sidebar */}
       <aside className={`bg-slate-900 text-white transition-all duration-300 ${isSidebarOpen ? 'w-64' : 'w-20'} flex flex-col fixed h-full z-50`}>
         <div className="p-6 flex items-center gap-4">
@@ -361,17 +405,17 @@ export default function AdminDashboard({
             onClick={() => setActiveTab('system')} 
             collapsed={!isSidebarOpen}
           />
+          
+          <div className="pt-8 mt-8 border-t border-slate-800">
+            <button 
+              onClick={() => logout()}
+              className="w-full flex items-center gap-4 p-3 rounded-xl transition-all text-red-400 hover:bg-red-500/10 hover:text-red-300"
+            >
+              <LogOut className="w-6 h-6" />
+              {isSidebarOpen && <span className="font-bold text-sm">Sair do CRM</span>}
+            </button>
+          </div>
         </nav>
-
-        <div className="p-4 border-t border-slate-800">
-          <button 
-            onClick={handleLogout}
-            className="w-full flex items-center gap-4 p-3 rounded-xl hover:bg-red-500/10 text-slate-400 hover:text-red-500 transition-all"
-          >
-            <LogOut className="w-6 h-6" />
-            {isSidebarOpen && <span className="font-bold text-sm">Sair do CRM</span>}
-          </button>
-        </div>
       </aside>
 
       {/* Main Content */}
@@ -382,7 +426,10 @@ export default function AdminDashboard({
             <button onClick={() => setIsSidebarOpen(!isSidebarOpen)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
               {isSidebarOpen ? <Menu className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
             </button>
-            <h1 className="text-xl font-display font-black text-slate-900 capitalize">{activeTab}</h1>
+            <h1 className="text-xl font-display font-black text-slate-900 capitalize tracking-tight flex items-center gap-3">
+              <Shield className="w-5 h-5 text-blue-600" />
+              {activeTab}
+            </h1>
           </div>
 
           <div className="flex items-center gap-6">
@@ -398,10 +445,13 @@ export default function AdminDashboard({
             </div>
             <div className="flex items-center gap-3">
               <div className="text-right hidden sm:block">
-                <p className="text-sm font-black text-slate-900">{userName}</p>
-                <p className="text-[10px] font-bold text-blue-600 uppercase tracking-widest">Super Admin</p>
+                <p className="text-sm font-black text-slate-900 leading-none mb-1">{userName}</p>
+                <div className="flex items-center justify-end gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
+                  <p className="text-[9px] font-black text-blue-600 uppercase tracking-widest">Super Administrador SAPS</p>
+                </div>
               </div>
-              <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white font-black">
+              <div className="w-10 h-10 rounded-2xl bg-slate-900 flex items-center justify-center text-white font-black shadow-xl shadow-slate-200 border-2 border-white ring-1 ring-slate-100">
                 {userName.charAt(0)}
               </div>
             </div>
@@ -431,30 +481,30 @@ export default function AdminDashboard({
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
                 <StatCard 
                   icon={<Users className="text-blue-600" />} 
-                  label="Total Utilizadores" 
-                  value={stats?.totalUsers} 
-                  trend="+12% este mês"
+                  label="Network Global" 
+                  value={stats?.totalUsers.toString()} 
+                  trend="+12% utilizadores"
                   color="blue"
                 />
                 <StatCard 
                   icon={<Briefcase className="text-purple-600" />} 
-                  label="Solicitações" 
-                  value={stats?.totalRequests} 
-                  trend="+5% hoje"
+                  label="Total Jobs" 
+                  value={stats?.totalRequests.toString()} 
+                  trend="+5% em 24h"
                   color="purple"
                 />
                 <StatCard 
                   icon={<TrendingUp className="text-green-600" />} 
-                  label="Volume Total" 
-                  value={`${stats?.totalVolume.toLocaleString()} Kz`} 
-                  trend="85% concluído"
+                  label="Volume de Fluxo" 
+                  value={formatKz(stats?.totalVolume)} 
+                  trend="Transações Brutas"
                   color="green"
                 />
                 <StatCard 
                   icon={<DollarSign className="text-orange-600" />} 
-                  label="Comissão SAPS" 
-                  value={`${stats?.platformCommission.toLocaleString()} Kz`} 
-                  trend="Taxa fixa 15%"
+                  label="Taxa SAPS (15%)" 
+                  value={formatKz(stats?.platformCommission)} 
+                  trend="Profit Yield"
                   color="orange"
                 />
               </div>
@@ -479,7 +529,7 @@ export default function AdminDashboard({
                           </div>
                         </div>
                         <div className="text-right">
-                          <p className="font-black text-slate-900">{req.precoFinal.toLocaleString()} Kz</p>
+                          <p className="font-black text-slate-900">{formatKz(req.precoFinal)}</p>
                           <span className={`text-[10px] font-black uppercase tracking-widest px-2 py-1 rounded-full ${getStatusColor(req.estadoSolicitacao)}`}>
                             {req.estadoSolicitacao}
                           </span>
@@ -536,7 +586,7 @@ export default function AdminDashboard({
                             <td className="py-4 text-sm font-bold text-slate-700">{log.nomeUtilizador || 'Sistema'}</td>
                             <td className="py-4 text-xs text-slate-500 font-medium">{log.detalhes}</td>
                             <td className="py-4 text-right text-[10px] font-bold text-slate-400">
-                              {new Date(log.data).toLocaleString()}
+                              {formatDate(log.data)}
                             </td>
                           </tr>
                         ))}
@@ -605,7 +655,7 @@ export default function AdminDashboard({
                           </div>
                         </td>
                         <td className="px-8 py-6 text-sm text-slate-500 font-medium">
-                          {new Date(user.dataCadastro).toLocaleDateString()}
+                          {formatDate(user.dataCadastro, false)}
                         </td>
                         <td className="px-8 py-6 text-right">
                           <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -616,6 +666,15 @@ export default function AdminDashboard({
                             >
                               <Bell className="w-4 h-4" />
                             </button>
+                            {user.tipoUtilizador === 'Prestador' && (
+                              <button 
+                                onClick={() => setViewingDocs(user)}
+                                className="p-2 text-purple-600 hover:bg-purple-50 rounded-lg transition-colors" 
+                                title="Ver Documentação"
+                              >
+                                <Shield className="w-4 h-4" />
+                              </button>
+                            )}
                             {user.estadoConta === 'Ativo' ? (
                               <button 
                                 onClick={() => handleUpdateUserStatus(user.uuidUtilizador, 'Suspenso')}
@@ -710,7 +769,7 @@ export default function AdminDashboard({
                           </span>
                         </td>
                         <td className="px-8 py-6">
-                          <p className="font-black text-slate-900">{req.precoFinal.toLocaleString()} Kz</p>
+                          <p className="font-black text-slate-900">{formatKz(req.precoFinal)}</p>
                           {req.pagamentoConfirmado === 1 ? (
                             <span className="text-[8px] font-black text-green-600 uppercase tracking-widest">Pago</span>
                           ) : (
@@ -718,7 +777,7 @@ export default function AdminDashboard({
                           )}
                         </td>
                         <td className="px-8 py-6 text-sm text-slate-500 font-medium">
-                          {new Date(req.dataCriacao).toLocaleDateString()}
+                          {formatDate(req.dataCriacao, false)}
                         </td>
                       </tr>
                     ))}
@@ -770,8 +829,8 @@ export default function AdminDashboard({
                     <p className="text-sm text-slate-500 font-medium mb-6 line-clamp-2">{cat.descricao}</p>
                     <div className="flex items-center justify-between pt-6 border-t border-slate-50">
                       <div>
-                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Preço Base</p>
-                        <p className="font-black text-slate-900">{cat.precoBase.toLocaleString()} Kz</p>
+                        <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Referência p/ IA</p>
+                        <p className="font-black text-slate-900">{formatKz(cat.precoBase)}</p>
                       </div>
                       <div className="flex items-center gap-2">
                         <div className={`w-2 h-2 rounded-full ${cat.ativo ? 'bg-green-500' : 'bg-red-500'}`} />
@@ -793,7 +852,7 @@ export default function AdminDashboard({
                   </div>
                   <h3 className="text-slate-500 font-bold uppercase tracking-widest text-xs mb-2">Volume Total Transacionado</h3>
                   <p className="text-5xl font-display font-black text-slate-900 tracking-tighter mb-4">
-                    {stats?.totalVolume.toLocaleString()} <span className="text-2xl">Kz</span>
+                    {formatKz(stats?.totalVolume)}
                   </p>
                   <p className="text-sm text-slate-400 font-medium">Baseado em {stats?.completedRequests} serviços concluídos</p>
                 </div>
@@ -805,7 +864,7 @@ export default function AdminDashboard({
                   </div>
                   <h3 className="text-blue-300 font-bold uppercase tracking-widest text-xs mb-2 relative z-10">Receita da Plataforma (15%)</h3>
                   <p className="text-5xl font-display font-black text-white tracking-tighter mb-4 relative z-10">
-                    {stats?.platformCommission.toLocaleString()} <span className="text-2xl">Kz</span>
+                    {formatKz(stats?.platformCommission)}
                   </p>
                   <p className="text-sm text-slate-400 font-medium relative z-10">Lucro bruto acumulado</p>
                 </div>
@@ -822,7 +881,7 @@ export default function AdminDashboard({
                         className="w-full bg-blue-600/10 hover:bg-blue-600 transition-all rounded-t-xl cursor-help relative group"
                       >
                         <div className="absolute -top-10 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] font-black px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                          {Math.floor(height * 10000).toLocaleString()} Kz
+                          {formatKz(Math.floor(height * 10000))}
                         </div>
                       </motion.div>
                       <span className="text-[8px] font-black text-slate-400 uppercase">{['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'][i]}</span>
@@ -1013,7 +1072,7 @@ export default function AdminDashboard({
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Preço Base (Kz)</label>
+                  <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2">Preço de Referência p/ IA (Kz)</label>
                   <input 
                     name="precoBase"
                     type="number"
@@ -1021,6 +1080,7 @@ export default function AdminDashboard({
                     required
                     className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-2xl text-sm font-bold focus:ring-2 focus:ring-blue-500 outline-none"
                   />
+                  <p className="mt-1 text-[9px] text-slate-400 font-medium italic">* Este valor serve apenas como guia interno para a IA calcular o preço final.</p>
                 </div>
                 {editingCategory && (
                   <div className="flex items-center gap-3">
@@ -1162,7 +1222,104 @@ export default function AdminDashboard({
             </motion.div>
           </div>
         )}
+
+        {viewingDocs && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-[2.5rem] w-full max-w-4xl overflow-hidden shadow-2xl max-h-[90vh] flex flex-col"
+            >
+              <div className="p-8 border-b border-slate-100 flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-display font-black text-slate-900">Documentação de Verificação</h2>
+                  <p className="text-sm text-slate-500 font-medium">{viewingDocs.nomeCompleto}</p>
+                </div>
+                <button onClick={() => setViewingDocs(null)} className="p-2 hover:bg-slate-100 rounded-lg transition-colors">
+                  <X className="w-6 h-6" />
+                </button>
+              </div>
+              
+              <div className="p-8 overflow-y-auto space-y-8">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  <DocumentCard 
+                    label="Bilhete de Identidade" 
+                    url={viewingDocs.urlBilheteIdentidade} 
+                  />
+                  <DocumentCard 
+                    label="Registo Criminal" 
+                    url={viewingDocs.urlRegistoCriminal} 
+                  />
+                  <DocumentCard 
+                    label="Certificado de Formação" 
+                    url={viewingDocs.urlCertificadoFormacao} 
+                  />
+                </div>
+                
+                {viewingDocs.estadoConta === 'Suspenso' && (
+                  <div className="p-6 bg-orange-50 border border-orange-100 rounded-[2rem] flex flex-col sm:flex-row items-center justify-between gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="w-12 h-12 bg-orange-100 rounded-2xl flex items-center justify-center">
+                        <Shield className="w-6 h-6 text-orange-600" />
+                      </div>
+                      <div>
+                        <p className="font-bold text-orange-900">Conta Atualmente Suspensa</p>
+                        <p className="text-xs text-orange-700 font-medium">Reveja os documentos acima antes de ativar o profissional.</p>
+                      </div>
+                    </div>
+                    <button 
+                      onClick={() => {
+                        handleUpdateUserStatus(viewingDocs.uuidUtilizador, 'Ativo');
+                        setViewingDocs(null);
+                      }}
+                      className="px-8 py-4 bg-orange-600 text-white font-black rounded-2xl text-sm hover:bg-orange-700 transition-all flex items-center gap-2"
+                    >
+                      <UserCheck className="w-5 h-5" />
+                      Validar e Ativar Perfil
+                    </button>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
       </AnimatePresence>
+    </div>
+    </>
+  );
+}
+
+function DocumentCard({ label, url }: { label: string, url: string | null }) {
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-black text-slate-400 uppercase tracking-widest">{label}</p>
+      {url ? (
+        <div className="relative aspect-[3/4] rounded-2xl overflow-hidden border border-slate-200 bg-slate-100 group">
+          <Image 
+            src={url} 
+            alt={label} 
+            fill 
+            className="object-cover group-hover:scale-105 transition-transform duration-500"
+            referrerPolicy="no-referrer"
+          />
+          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+            <a 
+              href={url} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="bg-white text-slate-900 px-4 py-2 rounded-xl text-xs font-bold shadow-lg"
+            >
+              Ver em Tamanho Real
+            </a>
+          </div>
+        </div>
+      ) : (
+        <div className="aspect-[3/4] rounded-2xl border-2 border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center p-6 text-center">
+          <XCircle className="w-10 h-10 text-slate-300 mb-2" />
+          <p className="text-xs font-bold text-slate-400">Documento não submetido</p>
+        </div>
+      )}
     </div>
   );
 }
